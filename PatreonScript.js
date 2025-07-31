@@ -13,7 +13,7 @@ const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
 const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s
 const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon.com\/(.+)/s
-const REGEX_PROFILE_CREATORS_URL = /https:\/\/(?:www\.)?patreon.com\/profile\/creators\?u=(\d+)/s
+const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators)?\?u=(\d+)/s
 
 const REGEX_MEMBERSHIPS = /<ul aria-label="Memberships".*?>(.*?)<\/ul>/s
 const REGEX_MEMBERSHIPS_URLS = /<a href="(.*?)"/g
@@ -174,9 +174,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 					}
 				};
 				
-				const platformChannel = campaignToPlatformChannel(channel);
-				_channelCache[url] = platformChannel;
-				return platformChannel;
+				return campaignToPlatformChannel(channel);
 			}
 		}
 	}
@@ -226,28 +224,36 @@ function getChannelFromUserId(userId, originalUrl) {
 				}
 			};
 
-			const channel = campaignToPlatformChannel(basicChannel);
-			
-			_channelCache[originalUrl] = channel;
-			return channel;
+			return campaignToPlatformChannel(basicChannel);
 		}
 	}
 
 	throw new ScriptException("Failed to get channel from user ID: " + userId);
 }
 source.getChannel = function (url) {
-	// Check if this is a profile/creators URL and handle it specially
-	const profileMatch = REGEX_PROFILE_CREATORS_URL.exec(url);
-	if (profileMatch && profileMatch.length === 2) {
-		const userId = profileMatch[1];
-		return getChannelFromUserId(userId, url);
-	}
-
 	const channelResp = http.GET(url, PATREON_REQUEST_MODIFIER.headers, false);
+	
+	// Check response first
 	if (!channelResp.isOk)
 	{
 		throwIfCaptcha(channelResp);
 		throw new ScriptException("Failed to get channel");
+	}
+	
+	// Use the final URL after any redirects
+	const finalUrl = channelResp.url;
+
+	const urlSet = new Set([url, finalUrl]);
+	
+	// Check if this is a profile URL (with or without /creators)
+	const profileMatch = REGEX_PROFILE_URL.exec(finalUrl);
+	if (profileMatch) {
+		const userId = profileMatch[1];
+		const profileChannel = getChannelFromUserId(userId, finalUrl);
+		urlSet.add(`https://www.patreon.com/profile/creators?u=${userId}`);
+		profileChannel.urlAlternatives = Array.from(urlSet);
+		_channelCache[url] = profileChannel;
+		return profileChannel;
 	}
 
 	let channelJson = REGEX_CHANNEL_DETAILS.exec(channelResp.body);
@@ -274,7 +280,10 @@ source.getChannel = function (url) {
 			}
 			else {
 				// Try API approach
-				return getChannelFromVanityUrl(url, channelResp.body);
+				const channel = getChannelFromVanityUrl(url, channelResp.body);
+				channel.urlAlternatives = Array.from(urlSet);
+				_channelCache[url] = channel;
+				return channel;
 			}
 		}
 	}
