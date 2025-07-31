@@ -42,7 +42,8 @@
 		"22": [
 			"Improvement: Add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
 			"Improvement: Add content recommendation support;",
-			"Improvement: Implement retry mechanism for improved network reliability;"
+			"Improvement: Implement retry mechanism for improved network reliability;",
+			"Improvement: Check all requests for captchas;"
 		]
 	},
 	"settings": [
