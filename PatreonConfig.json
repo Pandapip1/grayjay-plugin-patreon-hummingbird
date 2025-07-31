@@ -40,7 +40,9 @@
 			"Fix: adjust channel parsing;"
 		],
 		"22": [
-			"Improvement: add support for profile URL pattern (patreon.com/profile?u=ID);"
+			"Improvement: add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
+			"Improvement: add content recommendation support;",
+			"Improvement: Implement retry mechanism for improved network reliability;"
 		]
 	},
 	"settings": [
