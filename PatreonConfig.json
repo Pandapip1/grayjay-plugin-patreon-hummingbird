@@ -32,16 +32,16 @@
 			"fix playing content;"
 		],
 		"20": [
-			"Improvement: load content on home;",
-			"Improvement: support deep linking to audio and video content types;",
-			"Improvement: add captcha resolution support;"
+			"Improvement: Load content on home;",
+			"Improvement: Support deep linking to audio and video content types;",
+			"Improvement: Add captcha resolution support;"
 		],
 		"21": [
-			"Fix: adjust channel parsing;"
+			"Fix: Adjust channel parsing;"
 		],
 		"22": [
-			"Improvement: add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
-			"Improvement: add content recommendation support;",
+			"Improvement: Add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
+			"Improvement: Add content recommendation support;",
 			"Improvement: Implement retry mechanism for improved network reliability;"
 		]
 	},
