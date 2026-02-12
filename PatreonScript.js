@@ -38,7 +38,6 @@ let _channelCache = {};
  * @param {string} options.url - The URL to call
  * @param {boolean} [options.useAuthenticated=false] - If true, will use the authenticated headers
  * @param {boolean} [options.parseResponse=true] - If true, will parse the response as json and check for errors
- * @param {number} [options.retries=0] - Number of retry attempts
  * @param {Object} [options.headers=null] - Custom headers to use for the request
  * @returns {string | Object} the response body as a string or the parsed json object
  * @throws {ScriptException}
@@ -48,49 +47,31 @@ function httpGET(options) {
         url,
         useAuthenticated = false,
         parseResponse = true,
-        retries = 0,
         headers = null
     } = options;
-    
-    let lastError;
-    let attempts = retries + 1; // +1 for the initial attempt
-    
-    while (attempts > 0) {
-        try {
-            const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
 
-            const resp = http.GET(
-                url,
-                localHeaders,
-                useAuthenticated
-            );
+    const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
 
-            if (!resp.isOk) {
-                throwIfCaptcha(resp);
-                throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-            }
-            
-            if (parseResponse) {
-                const json = JSON.parse(resp.body);
-                if (json.errors && json.errors.length > 0) {
-                    throw new ScriptException(json.errors[0].message || "API returned errors");
-                }
-                return json;
-            }
-            
-            return resp.body;
-        } catch (error) {
-            lastError = error;
-            attempts--;
-            
-            if (attempts === 0) {
-                // All retry attempts failed
-                log(`Request failed after ${retries + 1} attempts`);
-                log(lastError);
-                throw lastError;
-            }
-        }
+    const resp = http.GET(
+        url,
+        localHeaders,
+        useAuthenticated
+    );
+
+    if (!resp.isOk) {
+        throwIfCaptcha(resp);
+        throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
     }
+
+    if (parseResponse) {
+        const json = JSON.parse(resp.body);
+        if (json.errors && json.errors.length > 0) {
+            throw new ScriptException(json.errors[0].message || "API returned errors");
+        }
+        return json;
+    }
+
+    return resp.body;
 }
 
 
