@@ -60,7 +60,9 @@ function httpGET(options) {
 
     if (!resp.isOk) {
         throwIfCaptcha(resp);
-        throw new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+        error.code = resp.code;
+        throw error;
     }
 
     if (parseResponse) {
@@ -296,6 +298,8 @@ source.getChannel = function (url) {
 		channelResp = { body: response };
 		finalUrl = url; // httpGET doesn't expose redirect URL, using original
 	} catch (error) {
+		if (error.code === 404)
+			throw new UnavailableException("Channel not found");
 		throw new ScriptException("Failed to get channel");
 	}
 
@@ -328,11 +332,14 @@ source.getChannel = function (url) {
 			channelJson = REGEX_CHANNEL_DETAILS3.exec(channelResp.body);
 			if (channelJson && channelJson.length == 2) {
 				const channelWrapperObj = JSON.parse(channelJson[1]);
-				channel = channelWrapperObj?.props?.pageProps?.bootstrapEnvelope?.bootstrap
-					?? channelWrapperObj?.props?.pageProps?.bootstrapEnvelope?.pageBootstrap;
+				const envelope = channelWrapperObj?.props?.pageProps?.bootstrapEnvelope;
+				channel = envelope?.bootstrap ?? envelope?.pageBootstrap;
 
 				if (!channel)
 					throw new ScriptException("Failed to parse channel");
+
+				if (channel.curtainType === "campaign_removed")
+					throw new UnavailableException("This page has been removed.");
 			}
 			else {
 				// Try API approach
