@@ -376,8 +376,10 @@ class ChannelContentPager extends ContentPager {
 		this.channel = channel;
 	}
 	nextPage() {
-		if (!this.nextPage)
-			throw new ScriptException("No next page");
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
 		const newResults = getPosts(this.campaignId, this.channel, this.nextPageUrl) ?? [];
 		this.results = newResults.results;
 		this.nextPageUrl = newResults.nextPage;
