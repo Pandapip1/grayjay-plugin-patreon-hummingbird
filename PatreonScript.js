@@ -130,13 +130,14 @@ source.searchChannels = function (query) {
 };
 class SearchChannelPager extends ChannelPager {
 	constructor(query) {
-		super(searchChannels(query, 1))
+		const results = searchChannels(query, 1);
+		super(results, results.length > 0);
 		this.query = query;
 		this.page = 1;
 	}
 	nextPage() {
 		this.page = this.page + 1;
-		this.results = searchChannels(query, this.page + 1);
+		this.results = searchChannels(this.query, this.page);
 		this.hasMore = this.results.length > 0;
 		return this;
 	}
