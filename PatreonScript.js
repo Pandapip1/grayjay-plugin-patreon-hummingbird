@@ -6,6 +6,7 @@ const BASE_URL_API = "https://www.patreon.com/api";
 const URL_HOME = BASE_URL + "/home";
 const URL_POSTS = BASE_URL_API + "/posts";
 const URL_SEARCH_CREATORS = BASE_URL_API + "/search";
+const URL_SEARCH_POSTS = BASE_URL_API + "/search_feed/v1/post";
 const URL_USER = BASE_URL_API + "/current_user";
 const URL_LAUNCHER_CARDS = BASE_URL_API + "/launcher/cards";
 
@@ -13,7 +14,7 @@ const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
 const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s
 const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon.com\/(.+)/s
-const REGEX_PROFILE_CREATORS_URL = /https:\/\/(?:www\.)?patreon.com\/profile\/creators\?u=(\d+)/s
+const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators)?\?u=(\d+)/s
 
 const REGEX_MEMBERSHIPS = /<ul aria-label="Memberships".*?>(.*?)<\/ul>/s
 const REGEX_MEMBERSHIPS_URLS = /<a href="(.*?)"/g
@@ -32,6 +33,50 @@ var _settings = {};
 
 let _channelCache = {};
 
+/**
+ * Gets the requested url and returns the response body either as a string or as a parsed json object
+ * @param {Object} options - The options object
+ * @param {string} options.url - The URL to call
+ * @param {boolean} [options.useAuthenticated=false] - If true, will use the authenticated headers
+ * @param {boolean} [options.parseResponse=true] - If true, will parse the response as json and check for errors
+ * @param {Object} [options.headers=null] - Custom headers to use for the request
+ * @returns {string | Object} the response body as a string or the parsed json object
+ * @throws {ScriptException}
+ */
+function httpGET(options) {
+    const {
+        url,
+        useAuthenticated = false,
+        parseResponse = true,
+        headers = null
+    } = options;
+
+    const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
+
+    const resp = http.GET(
+        url,
+        localHeaders,
+        useAuthenticated
+    );
+
+    if (!resp.isOk) {
+        throwIfCaptcha(resp);
+        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+        error.code = resp.code;
+        throw error;
+    }
+
+    if (parseResponse) {
+        const json = JSON.parse(resp.body);
+        if (json.errors && json.errors.length > 0) {
+            throw new ScriptException(json.errors[0].message || "API returned errors");
+        }
+        return json;
+    }
+
+    return resp.body;
+}
+
 
 //Source Methods
 source.enable = function (conf, settings, savedState) {
@@ -47,11 +92,14 @@ source.getHome = function () {
 		return new ContentPager([], false);
 	}
 
-	const baseResp = http.GET(BASE_URL, PATREON_REQUEST_MODIFIER.headers, false);
-	if (!baseResp.isOk)
-	{
-		throwIfCaptcha(baseResp);
-		throw new ScriptException("Failed to get channel");
+	try {
+		httpGET({
+			url: BASE_URL,
+			useAuthenticated: false,
+			parseResponse: false
+		});
+	} catch (error) {
+		throw new ScriptException("Failed to get home page");
 	}
 	
 	return new HomePager();
@@ -68,7 +116,7 @@ source.getSearchCapabilities = () => {
 	};
 };
 source.search = function (query, type, order, filters) {
-	return new ContentPager([], false);
+	return new SearchContentPager(query);
 };
 source.getSearchChannelContentsCapabilities = function () {
 	return {
@@ -83,14 +131,35 @@ source.searchChannels = function (query) {
 };
 class SearchChannelPager extends ChannelPager {
 	constructor(query) {
-		super(searchChannels(query, 1))
+		const results = searchChannels(query, 1);
+		super(results, results.length > 0);
 		this.query = query;
 		this.page = 1;
 	}
 	nextPage() {
 		this.page = this.page + 1;
-		this.results = searchChannels(query, this.page + 1);
+		this.results = searchChannels(this.query, this.page);
 		this.hasMore = this.results.length > 0;
+		return this;
+	}
+}
+
+class SearchContentPager extends ContentPager {
+	constructor(query) {
+		const initial = searchPosts(query, "");
+		super(initial.results, initial.hasMore);
+		this.query = query;
+		this.cursor = initial.cursor;
+	}
+	nextPage() {
+		if (!this.cursor) {
+			this.hasMore = false;
+			return this;
+		}
+		const page = searchPosts(this.query, this.cursor);
+		this.results = page.results;
+		this.cursor = page.cursor;
+		this.hasMore = page.hasMore;
 		return this;
 	}
 }
@@ -140,7 +209,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 			let match;
 			while ((match = pattern.exec(htmlContent)) !== null) {
 				// Look for IDs that are likely campaign IDs (8+ digits)
-				if (match[1] && match[1].length >= 7) {
+				if (match[1] && match[1].length >= 5) {
 					campaignId = match[1];
 					break;
 				}
@@ -151,11 +220,14 @@ function getChannelFromVanityUrl(url, htmlContent) {
 	
 	if (campaignId) {
 		// Try to get campaign data via campaigns API
-		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?include=creator";
-		const apiResp = http.GET(apiUrl, PATREON_REQUEST_MODIFIER.headers, true);
+		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY;
 		
-		if (apiResp.isOk) {
-			const apiData = JSON.parse(apiResp.body);
+		try {
+			const apiData = httpGET({
+				url: apiUrl,
+				useAuthenticated: true,
+				parseResponse: true
+			});
 			if (apiData.data && apiData.data.attributes) {
 				// Convert API response to expected format
 				const channel = {
@@ -174,13 +246,14 @@ function getChannelFromVanityUrl(url, htmlContent) {
 					}
 				};
 				
-				const platformChannel = campaignToPlatformChannel(channel);
-				_channelCache[url] = platformChannel;
-				return platformChannel;
+				const links = extractSocialLinks(apiData.included);
+				return campaignToPlatformChannel(channel, links);
 			}
+		} catch (error) {
+			// Continue to error handling below
 		}
 	}
-	
+
 	throw new ScriptException("Failed to get channel from HTML content. Campaign ID not found or API call failed.");
 }
 
@@ -188,10 +261,13 @@ function getChannelFromVanityUrl(url, htmlContent) {
 function getChannelFromUserId(userId, originalUrl) {
 	// First, try to get user information from the API
 	const userApiUrl = BASE_URL_API + "/user/" + userId + "?include=campaign";
-	const userResp = http.GET(userApiUrl, {}, true);
+	const userData = httpGET({
+		url: userApiUrl,
+		useAuthenticated: true,
+		parseResponse: true
+	});
 
-	if (userResp.isOk) {
-		const userData = JSON.parse(userResp.body);
+	if (userData) {
 
 		// Check if user has a campaign (is a creator) via relationships
 		if (userData.data && userData.data.relationships && userData.data.relationships.campaign) {
@@ -199,7 +275,8 @@ function getChannelFromUserId(userId, originalUrl) {
 			const campaign = userData.included?.find(item => item.type === 'campaign' && item.id === campaignId);
 
 			if (campaign) {
-				const channel = campaignToPlatformChannel({ campaign: { data: campaign }});
+				const links = fetchSocialLinks(campaignId);
+				const channel = campaignToPlatformChannel({ campaign: { data: campaign }}, links);
 				_channelCache[originalUrl] = channel;
 				return channel;
 			}
@@ -226,28 +303,41 @@ function getChannelFromUserId(userId, originalUrl) {
 				}
 			};
 
-			const channel = campaignToPlatformChannel(basicChannel);
-			
-			_channelCache[originalUrl] = channel;
-			return channel;
+			return campaignToPlatformChannel(basicChannel);
 		}
 	}
 
 	throw new ScriptException("Failed to get channel from user ID: " + userId);
 }
 source.getChannel = function (url) {
-	// Check if this is a profile/creators URL and handle it specially
-	const profileMatch = REGEX_PROFILE_CREATORS_URL.exec(url);
-	if (profileMatch && profileMatch.length === 2) {
-		const userId = profileMatch[1];
-		return getChannelFromUserId(userId, url);
+	let channelResp;
+	let finalUrl;
+	
+	try {
+		const response = httpGET({
+			url: url,
+			useAuthenticated: false,
+			parseResponse: false
+		});
+		channelResp = { body: response };
+		finalUrl = url; // httpGET doesn't expose redirect URL, using original
+	} catch (error) {
+		if (error.code === 404)
+			throw new UnavailableException("Channel not found");
+		throw new ScriptException("Failed to get channel");
 	}
 
-	const channelResp = http.GET(url, PATREON_REQUEST_MODIFIER.headers, false);
-	if (!channelResp.isOk)
-	{
-		throwIfCaptcha(channelResp);
-		throw new ScriptException("Failed to get channel");
+	const urlSet = new Set([url, finalUrl]);
+	
+	// Check if this is a profile URL (with or without /creators)
+	const profileMatch = REGEX_PROFILE_URL.exec(finalUrl);
+	if (profileMatch) {
+		const userId = profileMatch[1];
+		const profileChannel = getChannelFromUserId(userId, finalUrl);
+		urlSet.add(`https://www.patreon.com/profile/creators?u=${userId}`);
+		profileChannel.urlAlternatives = Array.from(urlSet);
+		_channelCache[url] = profileChannel;
+		return profileChannel;
 	}
 
 	let channelJson = REGEX_CHANNEL_DETAILS.exec(channelResp.body);
@@ -266,22 +356,30 @@ source.getChannel = function (url) {
 			channelJson = REGEX_CHANNEL_DETAILS3.exec(channelResp.body);
 			if (channelJson && channelJson.length == 2) {
 				const channelWrapperObj = JSON.parse(channelJson[1]);
-				channel = channelWrapperObj?.props?.pageProps?.bootstrapEnvelope?.bootstrap
-					?? channelWrapperObj?.props?.pageProps?.bootstrapEnvelope?.pageBootstrap;
+				const envelope = channelWrapperObj?.props?.pageProps?.bootstrapEnvelope;
+				channel = envelope?.bootstrap ?? envelope?.pageBootstrap;
 
 				if (!channel)
 					throw new ScriptException("Failed to parse channel");
+
+				if (channel.curtainType === "campaign_removed")
+					throw new UnavailableException("This page has been removed.");
 			}
 			else {
 				// Try API approach
-				return getChannelFromVanityUrl(url, channelResp.body);
+				const channel = getChannelFromVanityUrl(url, channelResp.body);
+				channel.urlAlternatives = Array.from(urlSet);
+				_channelCache[url] = channel;
+				return channel;
 			}
 		}
 	}
 	else
 		channel = JSON.parse(channelJson[1]);
 
-	_channelCache[url] = campaignToPlatformChannel(channel);
+	const campaignId = channel?.campaign?.data?.id;
+	const links = campaignId ? fetchSocialLinks(campaignId) : {};
+	_channelCache[url] = campaignToPlatformChannel(channel, links);
 	return _channelCache[url];
 };
 source.getChannelContents = function (url) {
@@ -299,8 +397,10 @@ class ChannelContentPager extends ContentPager {
 		this.channel = channel;
 	}
 	nextPage() {
-		if (!this.nextPage)
-			throw new ScriptException("No next page");
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
 		const newResults = getPosts(this.campaignId, this.channel, this.nextPageUrl) ?? [];
 		this.results = newResults.results;
 		this.nextPageUrl = newResults.nextPage;
@@ -325,15 +425,19 @@ source.isContentDetailsUrl = function (url) {
 
 source.getContentDetails = function (url) {
     const postId = getPostIdFromUrl(url);
-    const postRes = http.GET(`https://www.patreon.com/api/posts/${postId}`, PATREON_REQUEST_MODIFIER.headers, true);
-
-    if (postRes.isOk) {
-        const postBody = JSON.parse(postRes.body);
-		const campaign = postBody.included.find(a => a.type == 'campaign');
-		const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
+    
+    try {
+        const postBody = httpGET({
+            url: `https://www.patreon.com/api/posts/${postId}`,
+            useAuthenticated: true,
+            parseResponse: true
+        });
+        const campaign = postBody.included.find(a => a.type == 'campaign');
+        const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
         return parseSinglePost(postBody.data, postBody, channel, true);
+    } catch (error) {
+        throw new ScriptException("Failed to get post details");
     }
-    throw new ScriptException("Failed to get post details");
 };
 
 //Comments
@@ -342,20 +446,26 @@ source.getComments = function (url, page = 0) {
 	if (idMatch.length != 2)
 		return new CommentPager([], false);
 	const id = idMatch[1];
-	const commentsResp = http.GET("https://www.patreon.com/api/posts/" + id + "/comments" +
-		"?include=include_replies%2Ccommenter%2Creplies%2Creplies.commenter" +
-		"&fields[comment]=body%2Ccreated%2Cvote_sum%2Creply_count" +
-		"&fields[post]=comment_count" +
-		"&fields[user]=image_url%2Cfull_name%2Curl" +
-		"&fields[flair]=image_tiny_url%2Cname" +
-		"&page[count]=10" +
-		"&sort=-created" +
-		"&json-api-use-default-includes=false" +
-		"&json-api-version=1.0", {}, true);
-	if (!commentsResp.isOk)
-		throw new ScriptException("Failed to get comments [" + commentsResp.code + "]");
-
-	return new PatreonCommentPager(url, JSON.parse(commentsResp.body));
+	
+	try {
+		const commentsData = httpGET({
+			url: "https://www.patreon.com/api/posts/" + id + "/comments" +
+				"?include=include_replies%2Ccommenter%2Creplies%2Creplies.commenter" +
+				"&fields[comment]=body%2Ccreated%2Cvote_sum%2Creply_count" +
+				"&fields[post]=comment_count" +
+				"&fields[user]=image_url%2Cfull_name%2Curl" +
+				"&fields[flair]=image_tiny_url%2Cname" +
+				"&page[count]=10" +
+				"&sort=-created" +
+				"&json-api-use-default-includes=false" +
+				"&json-api-version=1.0",
+			useAuthenticated: true,
+			parseResponse: true
+		});
+		return new PatreonCommentPager(url, commentsData);
+	} catch (error) {
+		throw new ScriptException("Failed to get comments");
+	}
 }
 source.getSubComments = function (comment) {
 	return new CommentPager([], false);
@@ -376,17 +486,21 @@ class PatreonCommentPager extends CommentPager {
 	}
 
 	nextPage() {
-		const resp = http.GET(this.nextPageUrl, {}, true);
-		if (!resp.isOk)
-			throw new ScriptException("Failed to get next comment page [" + resp.code + "]")
-
-		const responseBody = JSON.parse(resp.body);
-		this.results = this.parseResponse(responseBody);
-		this.nextPageUrl = responseBody?.links?.next;
-		
-		this.hasMore = !!this.nextPageUrl;
-		
-		return this;
+		try {
+			const responseBody = httpGET({
+				url: this.nextPageUrl,
+				useAuthenticated: true,
+				parseResponse: true
+			});
+			this.results = this.parseResponse(responseBody);
+			this.nextPageUrl = responseBody?.links?.next;
+			
+			this.hasMore = !!this.nextPageUrl;
+			
+			return this;
+		} catch (error) {
+			throw new ScriptException("Failed to get next comment page");
+		}
 	}
 
 	parseResponse(resp) {
@@ -431,57 +545,118 @@ class PatreonComment extends Comment {
 }
 
 source.getUserSubscriptions = function () {
-	const homePageResp = http.GET(URL_USER + "?include=active_memberships.campaign", {}, true);
-	if (!homePageResp.isOk)
+	try {
+		const response = httpGET({
+			url: URL_USER + "?include=active_memberships.campaign",
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		return response.data.relationships.active_memberships.data.map((membership) => {
+			const channel_id = response.included.find((extra) => extra.id === membership.id).relationships.campaign.data.id
+			const channel_url = response.included.find((extra) => extra.id === channel_id).attributes.url
+			return channel_url
+		});
+	} catch (error) {
 		throw new ScriptException("Failed to get subscriptions");
-
-	const response = JSON.parse(homePageResp.body)
-
-	return response.data.relationships.active_memberships.data.map((membership) => {
-		const channel_id = response.included.find((extra) => extra.id === membership.id).relationships.campaign.data.id
-		const channel_url = response.included.find((extra) => extra.id === channel_id).attributes.url
-		return channel_url
-	})
+	}
 }
 
 function getPosts(campaign, context, nextPage) {
-	const dataResp = http.GET((!nextPage) ? BASE_URL_API + "/posts" +
-		"?filter[campaign_id]=" + campaign +
-		"&include=images" +
-		"&filter[contains_exclusive_posts]=true" +
-		"&sort=-published_at" : nextPage, PATREON_REQUEST_MODIFIER.headers, true);
-
-	if (!dataResp.isOk)
-	{
-		log("Failed to get posts [" + dataResp.code + "]");
-
-		throwIfCaptcha(dataResp);
-
-		return {
-			results: [],
-			nextPage: null,
-			hasMore: false
-		}
-	}
-	
-	const data = JSON.parse(dataResp.body);
+	try {
+		const data = httpGET({
+			url: (!nextPage) ? BASE_URL_API + "/posts" +
+				"?filter[campaign_id]=" + campaign +
+				"&include=images" +
+				"&filter[contains_exclusive_posts]=true" +
+				"&sort=-published_at" : nextPage,
+			useAuthenticated: true,
+			parseResponse: true
+		});
 
 	if (IS_TESTING)
 		console.log("getPosts data:", data);
 
-	// Map all posts to Platform content using the reusable mapping functions
-	const contents = data?.data
-		?.map(post => mapPostToPlatformContent(post, context, data))
-		?.filter(content => content != null) ?? [];
+		// Map all posts to Platform content using the reusable mapping functions
+		const contents = data?.data
+			?.map(post => mapPostToPlatformContent(post, context, data))
+			?.filter(content => content != null) ?? [];
 
-	return {
-		results: contents,
-		nextPage: data?.links?.next
-	};
+		return {
+			results: contents,
+			nextPage: data?.links?.next
+		};
+	} catch (error) {
+		log("Failed to get posts: " + error.message);
+		return {
+			results: [],
+			nextPage: null,
+			hasMore: false
+		};
+	}
 }
 
-function campaignToPlatformChannel(channel) {
-	
+const SOCIAL_LINKS_QUERY = "&include=connected_socials,creator" +
+	"&fields[connected_socials]=app_name,external_profile_url,is_public" +
+	"&fields[user]=youtube,twitter,twitch,facebook" +
+	"&json-api-use-default-includes=false";
+
+const SOCIAL_APP_NAME_MAP = {
+	"youtube": "YouTube",
+	"twitter": "Twitter",
+	"twitch": "Twitch",
+	"facebook": "Facebook",
+	"instagram": "Instagram",
+	"tiktok": "TikTok",
+	"discord": "Discord",
+	"spotify": "Spotify",
+	"reddit": "Reddit",
+	"vimeo": "Vimeo"
+};
+
+function extractSocialLinks(included) {
+	const links = {};
+	if (!included) return links;
+
+	// Extract from connected_socials (OAuth-connected, shown on about page)
+	for (const item of included) {
+		if (item.type === "social-connection" && item.attributes?.is_public && item.attributes?.external_profile_url) {
+			const name = SOCIAL_APP_NAME_MAP[item.attributes.app_name] || item.attributes.app_name;
+			links[name] = item.attributes.external_profile_url;
+		}
+	}
+
+	// Extract legacy user fields as fallback
+	const user = included.find(item => item.type === "user");
+	if (user?.attributes) {
+		if (user.attributes.youtube && !links["YouTube"])
+			links["YouTube"] = user.attributes.youtube;
+		if (user.attributes.twitter && !links["Twitter"])
+			links["Twitter"] = "https://twitter.com/" + user.attributes.twitter;
+		if (user.attributes.twitch && !links["Twitch"])
+			links["Twitch"] = user.attributes.twitch;
+		if (user.attributes.facebook && !links["Facebook"])
+			links["Facebook"] = user.attributes.facebook;
+	}
+
+	return links;
+}
+
+function fetchSocialLinks(campaignId) {
+	try {
+		const data = httpGET({
+			url: BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY,
+			useAuthenticated: true,
+			parseResponse: true
+		});
+		return extractSocialLinks(data.included);
+	} catch (error) {
+		return {};
+	}
+}
+
+function campaignToPlatformChannel(channel, links) {
+
 	return new PlatformChannel({
 		id: new PlatformID(config.name, channel?.campaign?.data?.id, config.id, PLATFORM_CLAIMTYPE),
 		name: channel?.campaign?.data?.attributes?.name,
@@ -489,7 +664,8 @@ function campaignToPlatformChannel(channel) {
 		url: channel?.campaign?.data?.attributes?.url,
 		subscribers: channel?.campaign?.data?.attributes?.patron_count,
 		banner: channel?.campaign?.data?.attributes?.image_url ?? channel?.campaign?.data?.attributes?.cover_photo_url ?? channel?.campaign?.data?.attributes?.cwh_cover_image_urls?.large,
-		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail
+		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail,
+		links: links ?? {}
 	})
 }
 
@@ -510,27 +686,92 @@ function parseSinglePost(item, data, context, isDetails=false) {
 
 
 function searchChannels(query, page) {
-	const dataResp = http.GET(URL_SEARCH_CREATORS +
-		"?q=" + query +
-		"&page[number]=" + page +
-		"&json-api-version=1.0&includes=[]", {}, false);
+	try {
+		const data = httpGET({
+			url: URL_SEARCH_CREATORS +
+				"?q=" + query +
+				"&page[number]=" + page +
+				"&json-api-version=1.0&includes=[]",
+			useAuthenticated: false,
+			parseResponse: true
+		});
 
-	if (!dataResp.isOk)
+		const channels = [];
+		for (let item of data.data) {
+			const id = item.id;
+			if (id.startsWith("campaign_"))
+				channels.push(new PlatformAuthorLink(new PlatformID(config.name, id.substring("campaign_".length), config.id, PLATFORM_CLAIMTYPE),
+					item.attributes.name,
+					item.attributes.url,
+					item.attributes.avatar_photo_url,
+					item.attributes.patron_count));
+		}
+
+		return channels.filter(x => x != null);
+	} catch (error) {
 		throw new ScriptException("Failed to search creators");
-	const data = JSON.parse(dataResp.body);
-
-	const channels = [];
-	for (let item of data.data) {
-		const id = item.id;
-		if (id.startsWith("campaign_"))
-			channels.push(new PlatformAuthorLink(new PlatformID(config.name, id.substring("campaign_".length), config.id, PLATFORM_CLAIMTYPE),
-				item.attributes.name,
-				item.attributes.url,
-				item.attributes.avatar_photo_url,
-				item.attributes.patron_count));
 	}
+}
 
-	return channels.filter(x => x != null);
+function searchPosts(query, cursor) {
+	try {
+		const data = httpGET({
+			url: URL_SEARCH_POSTS +
+				"?sort=relevance" +
+				"&filter[query]=" + encodeURIComponent(query) +
+				"&filter[is_for_preview]=false" +
+				"&filter[filter_by_user_subscription]=false" +
+				"&filter[include_nsfw]=true" +
+				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
+				"&fields[post]=comment_count%2Ccontent%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
+				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
+				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
+				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
+				"&json-api-version=1.0&json-api-use-default-includes=false",
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		const includedMap = createIncludedLookupMap(data.included);
+		const contents = [];
+
+		for (const feedItem of (data.data || [])) {
+			const cardPostRef = feedItem.relationships?.card_post?.data;
+			if (!cardPostRef) continue;
+
+			const cardPost = includedMap.get(cardPostRef.type + ":" + cardPostRef.id);
+			const postRef = cardPost?.relationships?.post?.data;
+			if (!postRef) continue;
+
+			const post = includedMap.get("post:" + postRef.id);
+			if (!post) continue;
+
+			const campaignRef = post.relationships?.campaign?.data;
+			const campaign = campaignRef ? includedMap.get("campaign:" + campaignRef.id) : null;
+
+			const campaignContext = {
+				name: campaign?.attributes?.name,
+				url: campaign?.attributes?.url,
+				thumbnail: campaign?.attributes?.avatar_photo_image_urls?.thumbnail || campaign?.attributes?.avatar_photo_url,
+				subscribers: campaign?.attributes?.patron_count || 0
+			};
+
+			const content = mapPostToPlatformContent(post, campaignContext, includedMap);
+			if (content) {
+				contents.push(content);
+			}
+		}
+
+		const nextCursor = data.meta?.pagination?.cursors?.next;
+		return {
+			results: contents,
+			cursor: nextCursor || null,
+			hasMore: !!nextCursor
+		};
+	} catch (error) {
+		log("Failed to search posts: " + error.message);
+		return { results: [], cursor: null, hasMore: false };
+	}
 }
 
 function getPostIdFromUrl(url) {
@@ -574,14 +815,12 @@ function getHomeContent(url) {
 		"&json-api-use-default-includes=false" +
 		"&page%5Bcount%5D=10");
 	
-	const response = http.GET(requestUrl, {}, true);
-	
-	if (!response.isOk) {
-		console.log("Failed to get home content: " + response.code);
-		return { results: [], hasMore: false, nextPageUrl: null };
-	}
-	
-	const data = JSON.parse(response.body);
+	try {
+		const data = httpGET({
+			url: requestUrl,
+			useAuthenticated: true,
+			parseResponse: true
+		});
 	const contents = [];
 	
 	// Build lookup maps for efficient access
@@ -621,11 +860,15 @@ function getHomeContent(url) {
 		}
 	}
 	
-	return {
-		results: contents,
-		hasMore: !!data.links?.next,
-		nextPageUrl: data.links?.next || null
-	};
+		return {
+			results: contents,
+			hasMore: !!data.links?.next,
+			nextPageUrl: data.links?.next || null
+		};
+	} catch (error) {
+		console.log("Failed to get home content: " + error.message);
+		return { results: [], hasMore: false, nextPageUrl: null };
+	}
 }
 
 // Unified post processing function
@@ -664,11 +907,31 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 	// Handle different post types
 	switch (attrs.post_type) {
 		case "video_external_file":
+			{
+				const contentDetails = mapToVideoContent(post, context);
+
+				if (contentDetails) {
+					contentDetails.getContentRecommendations = function () {
+						return source.getContentRecommendations(contentDetails.url);
+					};
+				}
+
+				return contentDetails;
+			}
+
 		case "podcast":
-			return mapToVideoContent(post, context);
-			
 		case "audio_file":
-			return mapToAudioContent(post, context);
+			{
+				const contentDetails =  mapToAudioContent(post, context);
+				
+				if (contentDetails) {
+					contentDetails.getContentRecommendations = function () {
+						return source.getContentRecommendations(contentDetails.url);
+					};
+				}
+
+				return contentDetails;
+			}
 			
 		case "text_only":
 			return mapToTextContent(post, context);
@@ -681,8 +944,54 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 	}
 }
 
+source.getContentRecommendations = function (url) {
+	const postId = getPostIdFromUrl(url);
+
+	if (!postId) {
+		return new ContentPager([], false);
+	}
+
+	try {
+		const postBody = httpGET({
+			url: `https://www.patreon.com/api/posts/${postId}`,
+			useAuthenticated: true,
+			parseResponse: true
+		});
+		const campaign = postBody.included?.find(a => a.type == 'campaign');
+
+		if (!campaign) {
+			return new ContentPager([], false);
+		}
+
+		// Create campaign context for posts
+		const campaignContext = {
+			name: campaign.attributes?.name,
+			url: campaign.attributes?.url,
+			thumbnail: campaign.attributes?.avatar_photo_image_urls?.thumbnail,
+			subscribers: campaign.attributes?.patron_count || 0
+		};
+
+		const requestUrl = `https://www.patreon.com/api/related_posts/${campaign.id}/${postId}?include=campaign%2Caccess_rules%2Caccess_rules.tier.null%2Cattachments_media%2Caudio%2Caudio_preview.null%2Ccustom_thumbnail_media.null%2Cdrop%2Cimages%2Cmedia%2Cnative_video_insights%2Cpoll.choices%2Cpoll.current_user_responses.user%2Cpoll.current_user_responses.choice%2Cpoll.current_user_responses.poll%2Cshows.null%2Cuser%2Cuser_defined_tags%2Cvideo.null%2Ccontent_unlock_options.product_variant.null%2Ccontent_unlock_options.reward.null%2Ccontent_unlock_options.product_variant.collection.null%2Clivestream%2Clivestream.state%2Clivestream.display%2Crss_synced_feed%2Cpost_new_comment_identity%2Cpost_new_comment_identity.avatar%2Cpost_new_comment_identity.community_profile%2Cpost_new_comment_identity.identity_badges&fields[campaign]=currency%2Cshow_audio_post_download_links%2Cavatar_photo_url%2Cavatar_photo_image_urls%2Cearnings_visibility%2Cis_nsfw%2Cis_monthly%2Cname%2Curl%2Cpatron_count%2Cprimary_theme_color&fields[post]=attachments_preview_metadata%2Cchange_visibility_at%2Ccomment_count%2Ccommenter_count%2Ccontent%2Ccontent_json_string%2Ccreated_at%2Ccurrent_user_can_comment%2Ccurrent_user_can_delete%2Ccurrent_user_can_report%2Ccurrent_user_can_view%2Ccurrent_user_comment_disallowed_reason%2Ccurrent_user_has_liked%2Cembed%2Cimage%2Cinsights_last_updated_at%2Cis_paid%2Cis_preview_blurred%2Chas_custom_thumbnail%2Clike_count%2Cmeta_image_url%2Cmin_cents_pledged_to_view%2Cmonetization_ineligibility_reason%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpatreon_url%2Cpost_type%2Cpledge_url%2Cpreview_asset_type%2Cthumbnail%2Cthumbnail_url%2Cteaser_text%2Cteaser_text_json_string%2Ccontent_teaser_text%2Ccleaned_teaser_text%2Ctitle%2Cupgrade_url%2Curl%2Cwas_posted_by_campaign_owner%2Chas_ti_violation%2Cmoderation_status%2Cpost_level_suspension_removal_date%2Cpls_one_liners_by_category%2Cvideo%2Cvideo_preview%2Cview_count%2Ccontent_unlock_options%2Cis_new_to_current_user%2Cwatch_state&fields[post_tag]=tag_type%2Cvalue&fields[user]=image_url%2Cfull_name%2Curl&fields[access_rule]=access_rule_type%2Camount_cents&fields[livestream]=display%2Cstate&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate&fields[native_video_insights]=average_view_duration%2Caverage_view_pct%2Chas_preview%2Cid%2Clast_updated_at%2Cnum_views%2Cpreview_views%2Cvideo_duration&fields[content-unlock-option]=content_unlock_type%2Cis_current_user_eligible%2Creward_benefit_categories&fields[product-variant]=price_cents%2Ccurrency_code%2Ccheckout_url%2Cis_hidden%2Cpublished_at_datetime%2Ccontent_type%2Corders_count%2Caccess_metadata%2Clive_sale_discounted_price_cents%2Clive_sale_discounted_price_info&fields[shows]=id%2Ctitle%2Cdescription%2Cthumbnail&fields[display-identity]=name%2Clink_url&fields[primary-image]=image_icon&fields[identity-badge]=badge_type&page[cursor]=null&page[count]=5&filter[is_by_creator]=true&filter[contains_exclusive_posts]=true&json-api-use-default-includes=false&json-api-version=1.0`;
+		
+		const data = httpGET({
+			url: requestUrl,
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		const content = data?.data
+			?.map(post => mapPostToPlatformContent(post, campaignContext, data))
+			?.filter(content => content != null) ?? [];
+
+		return new ContentPager(content, false);
+	} catch (error) {
+		return new ContentPager([], false);
+	}
+};
+
 // Maps post to PlatformVideoDetails for video content
 function mapToVideoContent(post, context) {
+	
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 	
@@ -717,7 +1026,7 @@ function mapToAudioContent(post, context) {
 		description: attrs.content || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.url, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.post_file?.default_thumbnail?.url, 1)
 		].filter(t => t.url)),
 		video: new UnMuxVideoSourceDescriptor([], [
 			new AudioUrlSource({
@@ -822,7 +1131,7 @@ function mapToNestedMediaContent(post, context) {
 		contentDescription: attrs.embed.description,
 		contentProvider: attrs.embed.provider,
 		contentThumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.large, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.url, 1)
 		].filter(x => x.url))
 	});
 }

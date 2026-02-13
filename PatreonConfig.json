@@ -8,7 +8,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
 	"scriptUrl": "./PatreonScript.js",
-	"version": 21,
+	"version": 23,
 	
 	"iconUrl": "./patreon_logo.png",
 	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
@@ -32,12 +32,24 @@
 			"fix playing content;"
 		],
 		"20": [
-			"Improvement: load content on home;",
-			"Improvement: support deep linking to audio and video content types;",
-			"Improvement: add captcha resolution support;"
+			"Improvement: Load content on home;",
+			"Improvement: Support deep linking to audio and video content types;",
+			"Improvement: Add captcha resolution support;"
 		],
 		"21": [
-			"Fix: adjust channel parsing;"
+			"Fix: Adjust channel parsing;"
+		],
+		"23": [
+			"Fix: Thumbnail for Nested Content (example Youtube);",
+			"Fix: Thumbnail for Podcasts (audio only);",
+			"Fix: Lower campaign ID min length to support shorter IDs;",
+			"Fix: Search channel pagination;",
+			"Improvement: Search posts;",
+			"Improvement: Add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
+			"Improvement: Add content recommendation support;",
+			"Improvement: Check all requests for captchas;",
+			"Improvement: Handle removed and non-existent pages;",
+			"Improvement: Extract social links;"
 		]
 	},
 	"settings": [
