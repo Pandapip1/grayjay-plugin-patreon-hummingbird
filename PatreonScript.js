@@ -187,7 +187,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 			let match;
 			while ((match = pattern.exec(htmlContent)) !== null) {
 				// Look for IDs that are likely campaign IDs (8+ digits)
-				if (match[1] && match[1].length >= 7) {
+				if (match[1] && match[1].length >= 5) {
 					campaignId = match[1];
 					break;
 				}
