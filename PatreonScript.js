@@ -982,7 +982,7 @@ function mapToNestedMediaContent(post, context) {
 		contentDescription: attrs.embed.description,
 		contentProvider: attrs.embed.provider,
 		contentThumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.large, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.url, 1)
 		].filter(x => x.url))
 	});
 }
