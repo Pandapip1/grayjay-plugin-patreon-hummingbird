@@ -40,10 +40,13 @@
 			"Fix: Adjust channel parsing;"
 		],
 		"22": [
+			"Fix: Thumbnail for Nested Content (example Youtube);",
+			"Fix: Lower campaign ID min length to support shorter IDs;",
 			"Improvement: Add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
 			"Improvement: Add content recommendation support;",
-			"Improvement: Implement retry mechanism for improved network reliability;",
-			"Improvement: Check all requests for captchas;"
+			"Improvement: Check all requests for captchas;",
+			"Improvement: Handle removed and non-existent pages;",
+			"Improvement: Extract social links;"
 		]
 	},
 	"settings": [
