@@ -41,8 +41,10 @@
 		],
 		"22": [
 			"Fix: Thumbnail for Nested Content (example Youtube);",
+			"Fix: Thumbnail for Podcasts (audio only);",
 			"Fix: Lower campaign ID min length to support shorter IDs;",
-			"Fix: Search channel pagination",
+			"Fix: Search channel pagination;",
+			"Improvement: Search posts;",
 			"Improvement: Add support for profile/creators URL pattern (patreon.com/profile/creators?u=ID);",
 			"Improvement: Add content recommendation support;",
 			"Improvement: Check all requests for captchas;",

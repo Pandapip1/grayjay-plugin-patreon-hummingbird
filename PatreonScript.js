@@ -6,6 +6,7 @@ const BASE_URL_API = "https://www.patreon.com/api";
 const URL_HOME = BASE_URL + "/home";
 const URL_POSTS = BASE_URL_API + "/posts";
 const URL_SEARCH_CREATORS = BASE_URL_API + "/search";
+const URL_SEARCH_POSTS = BASE_URL_API + "/search_feed/v1/post";
 const URL_USER = BASE_URL_API + "/current_user";
 const URL_LAUNCHER_CARDS = BASE_URL_API + "/launcher/cards";
 
@@ -115,7 +116,7 @@ source.getSearchCapabilities = () => {
 	};
 };
 source.search = function (query, type, order, filters) {
-	return new ContentPager([], false);
+	return new SearchContentPager(query);
 };
 source.getSearchChannelContentsCapabilities = function () {
 	return {
@@ -139,6 +140,26 @@ class SearchChannelPager extends ChannelPager {
 		this.page = this.page + 1;
 		this.results = searchChannels(this.query, this.page);
 		this.hasMore = this.results.length > 0;
+		return this;
+	}
+}
+
+class SearchContentPager extends ContentPager {
+	constructor(query) {
+		const initial = searchPosts(query, "");
+		super(initial.results, initial.hasMore);
+		this.query = query;
+		this.cursor = initial.cursor;
+	}
+	nextPage() {
+		if (!this.cursor) {
+			this.hasMore = false;
+			return this;
+		}
+		const page = searchPosts(this.query, this.cursor);
+		this.results = page.results;
+		this.cursor = page.cursor;
+		this.hasMore = page.hasMore;
 		return this;
 	}
 }
@@ -692,6 +713,67 @@ function searchChannels(query, page) {
 	}
 }
 
+function searchPosts(query, cursor) {
+	try {
+		const data = httpGET({
+			url: URL_SEARCH_POSTS +
+				"?sort=relevance" +
+				"&filter[query]=" + encodeURIComponent(query) +
+				"&filter[is_for_preview]=false" +
+				"&filter[filter_by_user_subscription]=false" +
+				"&filter[include_nsfw]=true" +
+				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
+				"&fields[post]=comment_count%2Ccontent%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
+				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
+				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
+				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
+				"&json-api-version=1.0&json-api-use-default-includes=false",
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		const includedMap = createIncludedLookupMap(data.included);
+		const contents = [];
+
+		for (const feedItem of (data.data || [])) {
+			const cardPostRef = feedItem.relationships?.card_post?.data;
+			if (!cardPostRef) continue;
+
+			const cardPost = includedMap.get(cardPostRef.type + ":" + cardPostRef.id);
+			const postRef = cardPost?.relationships?.post?.data;
+			if (!postRef) continue;
+
+			const post = includedMap.get("post:" + postRef.id);
+			if (!post) continue;
+
+			const campaignRef = post.relationships?.campaign?.data;
+			const campaign = campaignRef ? includedMap.get("campaign:" + campaignRef.id) : null;
+
+			const campaignContext = {
+				name: campaign?.attributes?.name,
+				url: campaign?.attributes?.url,
+				thumbnail: campaign?.attributes?.avatar_photo_image_urls?.thumbnail || campaign?.attributes?.avatar_photo_url,
+				subscribers: campaign?.attributes?.patron_count || 0
+			};
+
+			const content = mapPostToPlatformContent(post, campaignContext, includedMap);
+			if (content) {
+				contents.push(content);
+			}
+		}
+
+		const nextCursor = data.meta?.pagination?.cursors?.next;
+		return {
+			results: contents,
+			cursor: nextCursor || null,
+			hasMore: !!nextCursor
+		};
+	} catch (error) {
+		log("Failed to search posts: " + error.message);
+		return { results: [], cursor: null, hasMore: false };
+	}
+}
+
 function getPostIdFromUrl(url) {
 	const match = url.match(/\/posts\/(?:[\w-]+-)?(\d+)/);
     return match ? match[1] : null;
@@ -825,10 +907,9 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 	// Handle different post types
 	switch (attrs.post_type) {
 		case "video_external_file":
-		case "podcast":
 			{
 				const contentDetails = mapToVideoContent(post, context);
-				
+
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
 						return source.getContentRecommendations(contentDetails.url);
@@ -837,7 +918,8 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 
 				return contentDetails;
 			}
-			
+
+		case "podcast":
 		case "audio_file":
 			{
 				const contentDetails =  mapToAudioContent(post, context);
@@ -944,7 +1026,7 @@ function mapToAudioContent(post, context) {
 		description: attrs.content || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.url, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.post_file?.default_thumbnail?.url, 1)
 		].filter(t => t.url)),
 		video: new UnMuxVideoSourceDescriptor([], [
 			new AudioUrlSource({
