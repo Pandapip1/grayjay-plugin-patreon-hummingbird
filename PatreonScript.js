@@ -198,7 +198,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 	
 	if (campaignId) {
 		// Try to get campaign data via campaigns API
-		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?include=creator";
+		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY;
 		
 		try {
 			const apiData = httpGET({
@@ -224,13 +224,14 @@ function getChannelFromVanityUrl(url, htmlContent) {
 					}
 				};
 				
-				return campaignToPlatformChannel(channel);
+				const links = extractSocialLinks(apiData.included);
+				return campaignToPlatformChannel(channel, links);
 			}
 		} catch (error) {
 			// Continue to error handling below
 		}
 	}
-	
+
 	throw new ScriptException("Failed to get channel from HTML content. Campaign ID not found or API call failed.");
 }
 
@@ -252,7 +253,8 @@ function getChannelFromUserId(userId, originalUrl) {
 			const campaign = userData.included?.find(item => item.type === 'campaign' && item.id === campaignId);
 
 			if (campaign) {
-				const channel = campaignToPlatformChannel({ campaign: { data: campaign }});
+				const links = fetchSocialLinks(campaignId);
+				const channel = campaignToPlatformChannel({ campaign: { data: campaign }}, links);
 				_channelCache[originalUrl] = channel;
 				return channel;
 			}
@@ -353,7 +355,9 @@ source.getChannel = function (url) {
 	else
 		channel = JSON.parse(channelJson[1]);
 
-	_channelCache[url] = campaignToPlatformChannel(channel);
+	const campaignId = channel?.campaign?.data?.id;
+	const links = campaignId ? fetchSocialLinks(campaignId) : {};
+	_channelCache[url] = campaignToPlatformChannel(channel, links);
 	return _channelCache[url];
 };
 source.getChannelContents = function (url) {
@@ -568,8 +572,67 @@ function getPosts(campaign, context, nextPage) {
 	}
 }
 
-function campaignToPlatformChannel(channel) {
-	
+const SOCIAL_LINKS_QUERY = "&include=connected_socials,creator" +
+	"&fields[connected_socials]=app_name,external_profile_url,is_public" +
+	"&fields[user]=youtube,twitter,twitch,facebook" +
+	"&json-api-use-default-includes=false";
+
+const SOCIAL_APP_NAME_MAP = {
+	"youtube": "YouTube",
+	"twitter": "Twitter",
+	"twitch": "Twitch",
+	"facebook": "Facebook",
+	"instagram": "Instagram",
+	"tiktok": "TikTok",
+	"discord": "Discord",
+	"spotify": "Spotify",
+	"reddit": "Reddit",
+	"vimeo": "Vimeo"
+};
+
+function extractSocialLinks(included) {
+	const links = {};
+	if (!included) return links;
+
+	// Extract from connected_socials (OAuth-connected, shown on about page)
+	for (const item of included) {
+		if (item.type === "social-connection" && item.attributes?.is_public && item.attributes?.external_profile_url) {
+			const name = SOCIAL_APP_NAME_MAP[item.attributes.app_name] || item.attributes.app_name;
+			links[name] = item.attributes.external_profile_url;
+		}
+	}
+
+	// Extract legacy user fields as fallback
+	const user = included.find(item => item.type === "user");
+	if (user?.attributes) {
+		if (user.attributes.youtube && !links["YouTube"])
+			links["YouTube"] = user.attributes.youtube;
+		if (user.attributes.twitter && !links["Twitter"])
+			links["Twitter"] = "https://twitter.com/" + user.attributes.twitter;
+		if (user.attributes.twitch && !links["Twitch"])
+			links["Twitch"] = user.attributes.twitch;
+		if (user.attributes.facebook && !links["Facebook"])
+			links["Facebook"] = user.attributes.facebook;
+	}
+
+	return links;
+}
+
+function fetchSocialLinks(campaignId) {
+	try {
+		const data = httpGET({
+			url: BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY,
+			useAuthenticated: true,
+			parseResponse: true
+		});
+		return extractSocialLinks(data.included);
+	} catch (error) {
+		return {};
+	}
+}
+
+function campaignToPlatformChannel(channel, links) {
+
 	return new PlatformChannel({
 		id: new PlatformID(config.name, channel?.campaign?.data?.id, config.id, PLATFORM_CLAIMTYPE),
 		name: channel?.campaign?.data?.attributes?.name,
@@ -577,7 +640,8 @@ function campaignToPlatformChannel(channel) {
 		url: channel?.campaign?.data?.attributes?.url,
 		subscribers: channel?.campaign?.data?.attributes?.patron_count,
 		banner: channel?.campaign?.data?.attributes?.image_url ?? channel?.campaign?.data?.attributes?.cover_photo_url ?? channel?.campaign?.data?.attributes?.cwh_cover_image_urls?.large,
-		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail
+		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail,
+		links: links ?? {}
 	})
 }
 
