@@ -907,6 +907,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 	// Handle different post types
 	switch (attrs.post_type) {
 		case "video_external_file":
+		case "video_embed":
 			{
 				const contentDetails = mapToVideoContent(post, context);
 
@@ -922,8 +923,9 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 		case "podcast":
 		case "audio_file":
 			{
-				const contentDetails =  mapToAudioContent(post, context);
-				
+				const isVideo = attrs.post_file && (attrs.post_file.width > 0 || attrs.post_file.url?.includes('.m3u8'));
+				const contentDetails = isVideo ? mapToVideoContent(post, context) : mapToAudioContent(post, context);
+
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
 						return source.getContentRecommendations(contentDetails.url);
@@ -932,13 +934,13 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 
 				return contentDetails;
 			}
-			
+
 		case "text_only":
 			return mapToTextContent(post, context);
-			
+
 		case "image_file":
 			return mapToImageContent(post, context, includedLookup);
-			
+
 		default:
 			return null;
 	}

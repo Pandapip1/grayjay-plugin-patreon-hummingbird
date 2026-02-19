@@ -8,7 +8,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
 	"scriptUrl": "./PatreonScript.js",
-	"version": 23,
+	"version": 24,
 	
 	"iconUrl": "./patreon_logo.png",
 	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
@@ -50,6 +50,9 @@
 			"Improvement: Check all requests for captchas;",
 			"Improvement: Handle removed and non-existent pages;",
 			"Improvement: Extract social links;"
+		],
+		"24": [
+			"Fix: Video playback for podcast posts containing video streams;"
 		]
 	},
 	"settings": [
