@@ -425,17 +425,23 @@ source.isContentDetailsUrl = function (url) {
 
 source.getContentDetails = function (url) {
     const postId = getPostIdFromUrl(url);
-    
+
     try {
         const postBody = httpGET({
             url: `https://www.patreon.com/api/posts/${postId}`,
             useAuthenticated: true,
             parseResponse: true
         });
+
+        if (!postBody.data.attributes.current_user_can_view) {
+            throw new UnavailableException("This content is exclusive for members.");
+        }
+
         const campaign = postBody.included.find(a => a.type == 'campaign');
         const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
         return parseSinglePost(postBody.data, postBody, channel, true);
     } catch (error) {
+        if (error instanceof UnavailableException) throw error;
         throw new ScriptException("Failed to get post details");
     }
 };
