@@ -66,16 +66,29 @@
 	],
 	
 	"authentication": {
-		"userAgent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.153 Mobile Safari/537.36",
+		"userAgent": null,
 		"loginUrl": "https://www.patreon.com/login",
 		"cookiesToFind": ["session_id"],
 		"cookiesExclOthers": false
 	},
-	
+
+	"authenticationDesktop": {
+		"userAgent": null,
+		"loginUrl": "https://www.patreon.com/login",
+		"cookiesToFind": ["session_id"],
+		"cookiesExclOthers": false,
+		"useMobileEmulation": false
+	},
+
 	"captcha": {
-		"userAgent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.5481.153 Mobile Safari/537.36",
+		"userAgent": null,
 		"captchaUrl": null,
 		"cookiesToFind": ["cf_clearance"]
+	},
+	"captchaDesktop": {
+		"captchaUrl": null,
+		"cookiesToFind": ["cf_clearance"],
+		"useMobileEmulation": false
 	},
 
 	"supportedClaimTypes": [12]
