@@ -8,7 +8,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
 	"scriptUrl": "./PatreonScript.js",
-	"version": 24,
+	"version": 25,
 	
 	"iconUrl": "./patreon_logo.png",
 	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
@@ -23,21 +23,12 @@
 		"patreon.com"
 	],
 	"changelog": {
-		"18": [
-			"support podcast post types;",
-			"fix comments pagination;",
-			"fix channel details description, banner and thumbnail for some creators;"
+		"25": [
+			"Improvement: Show unavailable message for members-only content;",
+			"Fix: Use webview's user-agent instead of hardcoded one to avoid bot detection;"
 		],
-		"19": [
-			"fix playing content;"
-		],
-		"20": [
-			"Improvement: Load content on home;",
-			"Improvement: Support deep linking to audio and video content types;",
-			"Improvement: Add captcha resolution support;"
-		],
-		"21": [
-			"Fix: Adjust channel parsing;"
+		"24": [
+			"Fix: Video playback for podcast posts containing video streams;"
 		],
 		"23": [
 			"Fix: Thumbnail for Nested Content (example Youtube);",
@@ -51,8 +42,21 @@
 			"Improvement: Handle removed and non-existent pages;",
 			"Improvement: Extract social links;"
 		],
-		"24": [
-			"Fix: Video playback for podcast posts containing video streams;"
+		"21": [
+			"Fix: Adjust channel parsing;"
+		],
+		"20": [
+			"Improvement: Load content on home;",
+			"Improvement: Support deep linking to audio and video content types;",
+			"Improvement: Add captcha resolution support;"
+		],
+		"19": [
+			"fix playing content;"
+		],
+		"18": [
+			"support podcast post types;",
+			"fix comments pagination;",
+			"fix channel details description, banner and thumbnail for some creators;"
 		]
 	},
 	"settings": [
