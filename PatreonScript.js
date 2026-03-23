@@ -1,5 +1,10 @@
 const PLATFORM = "Patreon";
 const PLATFORM_CLAIMTYPE = 12;
+const IS_DESKTOP = bridge.buildPlatform === "desktop";
+const USER_AGENT_FALLBACK = IS_DESKTOP
+	? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Safari/537.36'
+	: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
+const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? USER_AGENT_FALLBACK;
 
 const BASE_URL = "https://www.patreon.com";
 const BASE_URL_API = "https://www.patreon.com/api";
@@ -83,7 +88,7 @@ source.enable = function (conf, settings, savedState) {
 	config = conf ?? {};
 	_settings = settings ?? {};
 
-	PATREON_REQUEST_MODIFIER.headers["User-Agent"] = config.authentication.userAgent;
+	PATREON_REQUEST_MODIFIER.headers["User-Agent"] = getUserAgent();
 
 }
 source.getHome = function () {
@@ -425,17 +430,23 @@ source.isContentDetailsUrl = function (url) {
 
 source.getContentDetails = function (url) {
     const postId = getPostIdFromUrl(url);
-    
+
     try {
         const postBody = httpGET({
             url: `https://www.patreon.com/api/posts/${postId}`,
             useAuthenticated: true,
             parseResponse: true
         });
+
+        if (!postBody.data.attributes.current_user_can_view) {
+            throw new UnavailableException("This content is exclusive for members.");
+        }
+
         const campaign = postBody.included.find(a => a.type == 'campaign');
         const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
         return parseSinglePost(postBody.data, postBody, channel, true);
     } catch (error) {
+        if (error instanceof UnavailableException) throw error;
         throw new ScriptException("Failed to get post details");
     }
 };
