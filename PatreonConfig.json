@@ -2,8 +2,7 @@
 	"name": "Patreon",
 	"description": "Patreon is a subscription platform allowing creators to release membership only content.",
 	"author": "FUTO",
-	"authorUrl": "https://futo.org",
-
+	"authorUrl": "https://futo.tech",
 	"platformUrl": "https://patreon.com",
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",

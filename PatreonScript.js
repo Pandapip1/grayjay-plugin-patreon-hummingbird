@@ -578,9 +578,11 @@ function getPosts(campaign, context, nextPage) {
 		const data = httpGET({
 			url: (!nextPage) ? BASE_URL_API + "/posts" +
 				"?filter[campaign_id]=" + campaign +
-				"&include=images" +
+				"&include=media" +
 				"&filter[contains_exclusive_posts]=true" +
-				"&sort=-published_at" : nextPage,
+				"&sort=-published_at" +
+				"&fields[post]=title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail" +
+				"&fields[media]=id,image_urls,display,download_url,metadata,file_name,state" : nextPage,
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -734,7 +736,7 @@ function searchPosts(query, cursor) {
 				"&filter[filter_by_user_subscription]=false" +
 				"&filter[include_nsfw]=true" +
 				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
-				"&fields[post]=comment_count%2Ccontent%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
+				"&fields[post]=comment_count%2Ccontent%2Ccontent_json_string%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
 				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
 				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
 				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
@@ -813,7 +815,7 @@ function getHomeContent(url) {
 		"&fields%5Bcomment%5D=body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state" +
 		"&fields%5Bcontent-unlock-option%5D=content_unlock_type,reward_benefit_categories" +
 		"&fields%5Bdisplay-identity%5D=name,link_url" +
-		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_teaser_text,current_user_can_comment," +
+		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment," +
 		"current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason," +
 		"embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type," +
 		"post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview" +
@@ -896,6 +898,70 @@ function createAuthor(post, context) {
 		context.thumbnail,
 		context.subscribers || 0
 	);
+}
+
+// ===== PROSEMIRROR → HTML CONVERTER =====
+
+function proseMirrorToHtml(doc) {
+	if (!doc || doc.type !== 'doc') return '';
+	return (doc.content || []).map(pmNodeToHtml).join('');
+}
+
+function pmNodeToHtml(node) {
+	if (!node) return '';
+	const children = () => (node.content || []).map(pmNodeToHtml).join('');
+	switch (node.type) {
+		case 'paragraph':     return '<p>' + children() + '</p>';
+		case 'hardBreak':     return '<br>';
+		case 'heading':       return '<h' + (node.attrs?.level || 1) + '>' + children() + '</h' + (node.attrs?.level || 1) + '>';
+		case 'bulletList':    return '<ul>' + children() + '</ul>';
+		case 'orderedList':   return '<ol>' + children() + '</ol>';
+		case 'listItem':      return '<li>' + children() + '</li>';
+		case 'blockquote':    return '<blockquote>' + children() + '</blockquote>';
+		case 'codeBlock':     return '<pre><code>' + children() + '</code></pre>';
+		case 'horizontalRule': return '<hr>';
+		case 'image': {
+			const src = node.attrs?.src || '';
+			const alt = node.attrs?.alt || '';
+			return '<img src="' + src + '" alt="' + alt + '">';
+		}
+		case 'text': {
+			let text = node.text || '';
+			if (node.marks) {
+				for (const mark of node.marks) {
+					text = pmApplyMark(mark, text);
+				}
+			}
+			return text;
+		}
+		default: return children();
+	}
+}
+
+function pmApplyMark(mark, text) {
+	switch (mark.type) {
+		case 'bold':      return '<strong>' + text + '</strong>';
+		case 'italic':    return '<em>' + text + '</em>';
+		case 'underline': return '<u>' + text + '</u>';
+		case 'strike':    return '<s>' + text + '</s>';
+		case 'code':      return '<code>' + text + '</code>';
+		case 'link': {
+			const href = mark.attrs?.href || '';
+			const target = mark.attrs?.target || '_blank';
+			return '<a href="' + href + '" target="' + target + '">' + text + '</a>';
+		}
+		default: return text;
+	}
+}
+
+function getPostHtmlContent(attrs) {
+	if (attrs.content) return attrs.content;
+	if (attrs.content_json_string) {
+		try {
+			return proseMirrorToHtml(JSON.parse(attrs.content_json_string));
+		} catch (e) { /* fall through */ }
+	}
+	return '';
 }
 
 // ===== REUSABLE MAPPING FUNCTIONS =====
@@ -1055,18 +1121,18 @@ function mapToAudioContent(post, context) {
 // Maps post to PlatformPostDetails for text content
 function mapToTextContent(post, context) {
 	const attrs = post?.attributes;
-	if (!attrs?.title && !attrs?.content) return null;
-	
+	const htmlContent = getPostHtmlContent(attrs);
+	if (!attrs?.title && !htmlContent) return null;
+
 	const maxDescriptionLength = 500;
 	let description = attrs.teaser_text || "";
-	
-	if (attrs.content) {
-		const text = domParser.parseFromString(attrs.content).text;
-		description = text.length > maxDescriptionLength 
+	if (htmlContent) {
+		const text = domParser.parseFromString(htmlContent).text;
+		description = text.length > maxDescriptionLength
 			? text.substring(0, maxDescriptionLength) + "..."
 			: text;
 	}
-	
+
 	return new PlatformPostDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Text Post",
@@ -1076,7 +1142,7 @@ function mapToTextContent(post, context) {
 		rating: new RatingLikes(attrs.like_count || 0),
 		description: description,
 		textType: Type.Text.HTML,
-		content: attrs.content || attrs.teaser_text || "",
+		content: htmlContent || attrs.teaser_text || "",
 		images: [],
 		thumbnails: []
 	});
@@ -1103,14 +1169,14 @@ function mapToImageContent(post, context, includedLookup) {
 	
 	const maxDescriptionLength = 500;
 	let description = attrs.teaser_text || "";
-	
-	if (attrs.content) {
-		const text = domParser.parseFromString(attrs.content).text;
-		description = text.length > maxDescriptionLength 
+	const htmlContent = getPostHtmlContent(attrs);
+	if (htmlContent) {
+		const text = domParser.parseFromString(htmlContent).text;
+		description = text.length > maxDescriptionLength
 			? text.substring(0, maxDescriptionLength) + "..."
 			: text;
 	}
-	
+
 	return new PlatformPostDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Image Post",
@@ -1120,7 +1186,7 @@ function mapToImageContent(post, context, includedLookup) {
 		rating: new RatingLikes(attrs.like_count || 0),
 		description: description,
 		textType: Type.Text.HTML,
-		content: attrs.content || "",
+		content: htmlContent || "",
 		images: images.map(img => img.attributes.image_urls.original),
 		thumbnails: images.map(img => img.attributes.image_urls.thumbnail 
 			? new Thumbnails([new Thumbnail(img.attributes.image_urls.thumbnail, 1)]) 
