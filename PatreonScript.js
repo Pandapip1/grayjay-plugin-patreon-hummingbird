@@ -1,6 +1,10 @@
 const PLATFORM = "Patreon";
 const PLATFORM_CLAIMTYPE = 12;
 const IS_DESKTOP = bridge.buildPlatform === "desktop";
+
+const ARTICLES_ENABLED_ANDROID = false; // Disabled until ChannelFragment missing IPlatformArticle click handler is fixed in the app. (tapping articles in channel content does nothing — ChannelFragment.onContentClicked has no IPlatformArticle branch)
+const ARTICLES_ENABLED_DESKTOP = false; // Desktop has no PlatformArticle UI, no C# model, and ContentGrid ignores contentType=3
+const ARTICLES_ENABLED = IS_DESKTOP ? ARTICLES_ENABLED_DESKTOP : ARTICLES_ENABLED_ANDROID;
 const USER_AGENT_FALLBACK = IS_DESKTOP
 	? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Safari/537.36'
 	: 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Mobile Safari/537.36';
@@ -578,9 +582,11 @@ function getPosts(campaign, context, nextPage) {
 		const data = httpGET({
 			url: (!nextPage) ? BASE_URL_API + "/posts" +
 				"?filter[campaign_id]=" + campaign +
-				"&include=images" +
+				"&include=images,media" +
 				"&filter[contains_exclusive_posts]=true" +
-				"&sort=-published_at" : nextPage,
+				"&sort=-published_at" +
+				"&fields[post]=title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail" +
+				"&fields[media]=id,image_urls,display,download_url,metadata,file_name,state" : nextPage,
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -734,7 +740,7 @@ function searchPosts(query, cursor) {
 				"&filter[filter_by_user_subscription]=false" +
 				"&filter[include_nsfw]=true" +
 				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
-				"&fields[post]=comment_count%2Ccontent%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
+				"&fields[post]=comment_count%2Ccontent%2Ccontent_json_string%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
 				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
 				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
 				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
@@ -813,7 +819,7 @@ function getHomeContent(url) {
 		"&fields%5Bcomment%5D=body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state" +
 		"&fields%5Bcontent-unlock-option%5D=content_unlock_type,reward_benefit_categories" +
 		"&fields%5Bdisplay-identity%5D=name,link_url" +
-		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_teaser_text,current_user_can_comment," +
+		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment," +
 		"current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason," +
 		"embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type," +
 		"post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview" +
@@ -896,6 +902,124 @@ function createAuthor(post, context) {
 		context.thumbnail,
 		context.subscribers || 0
 	);
+}
+
+// ===== PROSEMIRROR → HTML CONVERTER =====
+
+function proseMirrorToHtml(doc) {
+	if (!doc || doc.type !== 'doc') return '';
+	return (doc.content || []).map(pmNodeToHtml).join('');
+}
+
+function pmNodeToHtml(node) {
+	if (!node) return '';
+	const children = () => (node.content || []).map(pmNodeToHtml).join('');
+	switch (node.type) {
+		case 'paragraph':     return '<p>' + children() + '</p>';
+		case 'hardBreak':     return '<br>';
+		case 'heading':       return '<h' + (node.attrs?.level || 1) + '>' + children() + '</h' + (node.attrs?.level || 1) + '>';
+		case 'bulletList':    return '<ul>' + children() + '</ul>';
+		case 'orderedList':   return '<ol>' + children() + '</ol>';
+		case 'listItem':      return '<li>' + children() + '</li>';
+		case 'blockquote':    return '<blockquote>' + children() + '</blockquote>';
+		case 'codeBlock':     return '<pre><code>' + children() + '</code></pre>';
+		case 'horizontalRule': return '<hr>';
+		case 'image': {
+			const src = node.attrs?.src || '';
+			const alt = node.attrs?.alt || '';
+			return '<img src="' + src + '" alt="' + alt + '">';
+		}
+		case 'text': {
+			let text = node.text || '';
+			if (node.marks) {
+				for (const mark of node.marks) {
+					text = pmApplyMark(mark, text);
+				}
+			}
+			return text;
+		}
+		default: return children();
+	}
+}
+
+function pmApplyMark(mark, text) {
+	switch (mark.type) {
+		case 'strong':    return '<strong>' + text + '</strong>';
+		case 'bold':      return '<strong>' + text + '</strong>';
+		case 'em':        return '<em>' + text + '</em>';
+		case 'italic':    return '<em>' + text + '</em>';
+		case 'underline': return '<u>' + text + '</u>';
+		case 'strike':    return '<s>' + text + '</s>';
+		case 'code':      return '<code>' + text + '</code>';
+		case 'link': {
+			const href = mark.attrs?.href || '';
+			const target = mark.attrs?.target || '_blank';
+			return '<a href="' + href + '" target="' + target + '">' + text + '</a>';
+		}
+		default: return text;
+	}
+}
+
+function htmlToPlainText(html) {
+	if (!html) return '';
+	try {
+		return domParser.parseFromString(html).text;
+	} catch (e) {
+		return html;
+	}
+}
+
+// Returns post body content. On Android: HTML. On Desktop: plain text (no renderer).
+function getPostHtmlContent(attrs) {
+	let html = '';
+	if (attrs?.content) {
+		html = attrs.content;
+	} else if (attrs?.content_json_string) {
+		try {
+			html = proseMirrorToHtml(JSON.parse(attrs.content_json_string));
+		} catch (e) { /* fall through */ }
+	}
+	return IS_DESKTOP ? htmlToPlainText(html) : html;
+}
+
+// Returns plain text from a ProseMirror inline node array (for heading content)
+function inlineNodesToText(content) {
+	if (!content) return '';
+	return content.map(node => node.text || '').join('');
+}
+
+// Converts a ProseMirror document to an ArticleSegment array (Android only).
+// Groups consecutive non-heading/non-image blocks into a single ArticleTextSegment.
+function proseMirrorToSegments(doc) {
+	if (!doc || doc.type !== 'doc') return [];
+	const segments = [];
+	let htmlAccum = '';
+
+	const flushText = () => {
+		if (htmlAccum) {
+			segments.push(new ArticleTextSegment(htmlAccum, 1));
+			htmlAccum = '';
+		}
+	};
+
+	for (const node of (doc.content || [])) {
+		if (node.type === 'heading') {
+			flushText();
+			segments.push(new ArticleHeaderSegment(inlineNodesToText(node.content), node.attrs?.level || 1));
+		} else if (node.type === 'image') {
+			flushText();
+			const src = node.attrs?.src || '';
+			if (src) {
+				segments.push(new ArticleImagesSegment([src], node.attrs?.caption || ''));
+			}
+		} else {
+			const html = pmNodeToHtml(node);
+			if (html) htmlAccum += html;
+		}
+	}
+
+	flushText();
+	return segments;
 }
 
 // ===== REUSABLE MAPPING FUNCTIONS =====
@@ -1004,10 +1128,9 @@ source.getContentRecommendations = function (url) {
 
 // Maps post to PlatformVideoDetails for video content
 function mapToVideoContent(post, context) {
-	
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
-	
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
@@ -1015,7 +1138,7 @@ function mapToVideoContent(post, context) {
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		duration: attrs.post_file.duration || 0,
-		description: attrs.content || attrs.teaser_text || "",
+		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url, 1)
@@ -1028,7 +1151,7 @@ function mapToVideoContent(post, context) {
 function mapToAudioContent(post, context) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
-	
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
@@ -1036,7 +1159,7 @@ function mapToAudioContent(post, context) {
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		duration: attrs.post_file.duration || 0,
-		description: attrs.content || attrs.teaser_text || "",
+		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.post_file?.default_thumbnail?.url, 1)
@@ -1052,41 +1175,71 @@ function mapToAudioContent(post, context) {
 	});
 }
 
-// Maps post to PlatformPostDetails for text content
+// Maps post to PlatformPostDetails (Desktop) or PlatformArticleDetails (Android) for text content
 function mapToTextContent(post, context) {
 	const attrs = post?.attributes;
-	if (!attrs?.title && !attrs?.content) return null;
-	
+	const htmlContent = getPostHtmlContent(attrs);
+	if (!attrs?.title && !htmlContent) return null;
+
 	const maxDescriptionLength = 500;
-	let description = attrs.teaser_text || "";
-	
-	if (attrs.content) {
-		const text = domParser.parseFromString(attrs.content).text;
-		description = text.length > maxDescriptionLength 
+	let description = attrs?.teaser_text || "";
+	if (htmlContent) {
+		const text = domParser.parseFromString(htmlContent).text;
+		description = text.length > maxDescriptionLength
 			? text.substring(0, maxDescriptionLength) + "..."
 			: text;
 	}
-	
-	return new PlatformPostDetails({
+
+	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Text Post",
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
-		rating: new RatingLikes(attrs.like_count || 0),
-		description: description,
+		rating: new RatingLikes(attrs.like_count || 0)
+	};
+
+	if (ARTICLES_ENABLED) {
+		let segments = [];
+		if (attrs?.content_json_string) {
+			try {
+				segments = proseMirrorToSegments(JSON.parse(attrs.content_json_string));
+			} catch (e) { /* fall through */ }
+		}
+		if (segments.length === 0 && htmlContent) {
+			segments = [new ArticleTextSegment(htmlContent, 1)];
+		}
+		if (segments.length > 0) {
+			const article = new PlatformArticleDetails({
+				...base,
+				summary: description,
+				thumbnails: new Thumbnails([
+					new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url, 1)
+				].filter(t => t.url)),
+				segments
+			});
+			article.getContentRecommendations = function () {
+				return source.getContentRecommendations(base.url);
+			};
+			return article;
+		}
+	}
+
+	return new PlatformPostDetails({
+		...base,
+		description,
 		textType: Type.Text.HTML,
-		content: attrs.content || attrs.teaser_text || "",
+		content: htmlContent || attrs?.teaser_text || "",
 		images: [],
 		thumbnails: []
 	});
 }
 
-// Maps post to PlatformPostDetails for image content
+// Maps post to PlatformPostDetails (Desktop) or PlatformArticleDetails (Android) for image content
 function mapToImageContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_metadata?.image_order) return null;
-	
+
 	// Use provided lookup or search in included data
 	const images = attrs.post_metadata.image_order
 		.map(id => {
@@ -1098,32 +1251,62 @@ function mapToImageContent(post, context, includedLookup) {
 			return null;
 		})
 		.filter(item => item && item.attributes?.image_urls);
-	
+
 	if (images.length === 0) return null;
-	
+
+	const htmlContent = getPostHtmlContent(attrs);
 	const maxDescriptionLength = 500;
-	let description = attrs.teaser_text || "";
-	
-	if (attrs.content) {
-		const text = domParser.parseFromString(attrs.content).text;
-		description = text.length > maxDescriptionLength 
+	let description = attrs?.teaser_text || "";
+	if (htmlContent) {
+		const text = domParser.parseFromString(htmlContent).text;
+		description = text.length > maxDescriptionLength
 			? text.substring(0, maxDescriptionLength) + "..."
 			: text;
 	}
-	
-	return new PlatformPostDetails({
+
+	const imageUrls = images.map(img => img.attributes.image_urls.original);
+
+	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Image Post",
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
-		rating: new RatingLikes(attrs.like_count || 0),
-		description: description,
+		rating: new RatingLikes(attrs.like_count || 0)
+	};
+
+	if (ARTICLES_ENABLED) {
+		const segments = [new ArticleImagesSegment(imageUrls, "")];
+		if (attrs?.content_json_string) {
+			try {
+				const textSegments = proseMirrorToSegments(JSON.parse(attrs.content_json_string));
+				segments.push(...textSegments);
+			} catch (e) { /* fall through */ }
+		} else if (htmlContent) {
+			segments.push(new ArticleTextSegment(htmlContent, 1));
+		}
+		const article = new PlatformArticleDetails({
+			...base,
+			summary: description,
+			thumbnails: new Thumbnails([
+				new Thumbnail(images[0].attributes.image_urls.thumbnail || imageUrls[0], 1)
+			].filter(t => t.url)),
+			segments
+		});
+		article.getContentRecommendations = function () {
+			return source.getContentRecommendations(base.url);
+		};
+		return article;
+	}
+
+	return new PlatformPostDetails({
+		...base,
+		description,
 		textType: Type.Text.HTML,
-		content: attrs.content || "",
-		images: images.map(img => img.attributes.image_urls.original),
-		thumbnails: images.map(img => img.attributes.image_urls.thumbnail 
-			? new Thumbnails([new Thumbnail(img.attributes.image_urls.thumbnail, 1)]) 
+		content: htmlContent || "",
+		images: imageUrls,
+		thumbnails: images.map(img => img.attributes.image_urls.thumbnail
+			? new Thumbnails([new Thumbnail(img.attributes.image_urls.thumbnail, 1)])
 			: null)
 	});
 }
