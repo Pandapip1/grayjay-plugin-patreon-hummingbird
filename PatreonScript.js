@@ -2,7 +2,7 @@ const PLATFORM = "Patreon";
 const PLATFORM_CLAIMTYPE = 12;
 const IS_DESKTOP = bridge.buildPlatform === "desktop";
 
-const ARTICLES_ENABLED_ANDROID = false; // Disabled until ChannelFragment missing IPlatformArticle click handler is fixed in the app. (tapping articles in channel content does nothing — ChannelFragment.onContentClicked has no IPlatformArticle branch)
+const ARTICLES_ENABLED_ANDROID = bridge.buildVersion >= 381; // Enabled on Android builds >= 381, where ChannelFragment.onContentClicked handles IPlatformArticle. Older builds had no branch for it, so tapping articles in channel content did nothing.
 const ARTICLES_ENABLED_DESKTOP = false; // Desktop has no PlatformArticle UI, no C# model, and ContentGrid ignores contentType=3
 const ARTICLES_ENABLED = IS_DESKTOP ? ARTICLES_ENABLED_DESKTOP : ARTICLES_ENABLED_ANDROID;
 const USER_AGENT_FALLBACK = IS_DESKTOP
@@ -988,7 +988,10 @@ function proseMirrorToSegments(doc) {
 			}
 		} else {
 			const html = pmNodeToHtml(node);
-			if (html) htmlAccum += html;
+			if (html) {
+				htmlAccum += html;
+				if (node.type === 'paragraph') htmlAccum += '<br>';
+			}
 		}
 	}
 
