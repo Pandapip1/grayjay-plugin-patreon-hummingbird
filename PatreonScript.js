@@ -37,54 +37,12 @@ let PATREON_REQUEST_MODIFIER = {
 	}
 };
 
-var config = {};
-var _settings = {};
+let config = {};
+let _settings = {};
 
-let _channelCache = {};
-
-/**
- * Gets the requested url and returns the response body either as a string or as a parsed json object
- * @param {Object} options - The options object
- * @param {string} options.url - The URL to call
- * @param {boolean} [options.useAuthenticated=false] - If true, will use the authenticated headers
- * @param {boolean} [options.parseResponse=true] - If true, will parse the response as json and check for errors
- * @param {Object} [options.headers=null] - Custom headers to use for the request
- * @returns {string | Object} the response body as a string or the parsed json object
- * @throws {ScriptException}
- */
-function httpGET(options) {
-    const {
-        url,
-        useAuthenticated = false,
-        parseResponse = true,
-        headers = null
-    } = options;
-
-    const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
-
-    const resp = http.GET(
-        url,
-        localHeaders,
-        useAuthenticated
-    );
-
-    if (!resp.isOk) {
-        throwIfCaptcha(resp);
-        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-        error.code = resp.code;
-        throw error;
-    }
-
-    if (parseResponse) {
-        const json = JSON.parse(resp.body);
-        if (json.errors && json.errors.length > 0) {
-            throw new ScriptException(json.errors[0].message || "API returned errors");
-        }
-        return json;
-    }
-
-    return resp.body;
-}
+let state = {
+	channelCache: {}
+};
 
 
 //Source Methods
@@ -94,6 +52,22 @@ source.enable = function (conf, settings, savedState) {
 
 	PATREON_REQUEST_MODIFIER.headers["User-Agent"] = getUserAgent();
 
+	if (savedState) {
+		try {
+			const restored = JSON.parse(savedState);
+			if (restored && typeof restored === "object") {
+				state = Object.assign(state, restored);
+				if (!state.channelCache || typeof state.channelCache !== "object") {
+					state.channelCache = {};
+				}
+			}
+		} catch (e) {
+			log("Patreon: failed to parse savedState, starting fresh: " + e);
+		}
+	}
+}
+source.saveState = function () {
+	return JSON.stringify(state);
 }
 source.getHome = function () {
 
@@ -286,7 +260,7 @@ function getChannelFromUserId(userId, originalUrl) {
 			if (campaign) {
 				const links = fetchSocialLinks(campaignId);
 				const channel = campaignToPlatformChannel({ campaign: { data: campaign }}, links);
-				_channelCache[originalUrl] = channel;
+				state.channelCache[originalUrl] = channel;
 				return channel;
 			}
 		}
@@ -345,7 +319,7 @@ source.getChannel = function (url) {
 		const profileChannel = getChannelFromUserId(userId, finalUrl);
 		urlSet.add(`https://www.patreon.com/profile/creators?u=${userId}`);
 		profileChannel.urlAlternatives = Array.from(urlSet);
-		_channelCache[url] = profileChannel;
+		state.channelCache[url] = profileChannel;
 		return profileChannel;
 	}
 
@@ -378,7 +352,7 @@ source.getChannel = function (url) {
 				// Try API approach
 				const channel = getChannelFromVanityUrl(url, channelResp.body);
 				channel.urlAlternatives = Array.from(urlSet);
-				_channelCache[url] = channel;
+				state.channelCache[url] = channel;
 				return channel;
 			}
 		}
@@ -388,12 +362,12 @@ source.getChannel = function (url) {
 
 	const campaignId = channel?.campaign?.data?.id;
 	const links = campaignId ? fetchSocialLinks(campaignId) : {};
-	_channelCache[url] = campaignToPlatformChannel(channel, links);
-	return _channelCache[url];
+	state.channelCache[url] = campaignToPlatformChannel(channel, links);
+	return state.channelCache[url];
 };
 source.getChannelContents = function (url) {
-	const channel = (_channelCache[url]) ? _channelCache[url] : source.getChannel(url);
-	_channelCache[url] = channel;
+	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
+	state.channelCache[url] = channel;
 	return new ChannelContentPager(channel.id.value, channel);
 };
 class ChannelContentPager extends ContentPager {
@@ -1401,6 +1375,52 @@ function throwIfCaptcha(resp) {
     }
     return true;
 }
+
+
+/**
+ * Gets the requested url and returns the response body either as a string or as a parsed json object
+ * @param {Object} options - The options object
+ * @param {string} options.url - The URL to call
+ * @param {boolean} [options.useAuthenticated=false] - If true, will use the authenticated headers
+ * @param {boolean} [options.parseResponse=true] - If true, will parse the response as json and check for errors
+ * @param {Object} [options.headers=null] - Custom headers to use for the request
+ * @returns {string | Object} the response body as a string or the parsed json object
+ * @throws {ScriptException}
+ */
+function httpGET(options) {
+    const {
+        url,
+        useAuthenticated = false,
+        parseResponse = true,
+        headers = null
+    } = options;
+
+    const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
+
+    const resp = http.GET(
+        url,
+        localHeaders,
+        useAuthenticated
+    );
+
+    if (!resp.isOk) {
+        throwIfCaptcha(resp);
+        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+        error.code = resp.code;
+        throw error;
+    }
+
+    if (parseResponse) {
+        const json = JSON.parse(resp.body);
+        if (json.errors && json.errors.length > 0) {
+            throw new ScriptException(json.errors[0].message || "API returned errors");
+        }
+        return json;
+    }
+
+    return resp.body;
+}
+
 
 
 log("LOADED");
