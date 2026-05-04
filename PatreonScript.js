@@ -1,4 +1,3 @@
-const PLATFORM = "Patreon";
 const PLATFORM_CLAIMTYPE = 12;
 const IS_DESKTOP = bridge.buildPlatform === "desktop";
 
@@ -12,8 +11,6 @@ const getUserAgent = () => bridge.authUserAgent ?? bridge.captchaUserAgent ?? US
 
 const BASE_URL = "https://www.patreon.com";
 const BASE_URL_API = "https://www.patreon.com/api";
-const URL_HOME = BASE_URL + "/home";
-const URL_POSTS = BASE_URL_API + "/posts";
 const URL_SEARCH_CREATORS = BASE_URL_API + "/search";
 const URL_SEARCH_POSTS = BASE_URL_API + "/search_feed/v1/post";
 const URL_USER = BASE_URL_API + "/current_user";
@@ -25,8 +22,6 @@ const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?
 const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon.com\/(.+)/s
 const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators)?\?u=(\d+)/s
 
-const REGEX_MEMBERSHIPS = /<ul aria-label="Memberships".*?>(.*?)<\/ul>/s
-const REGEX_MEMBERSHIPS_URLS = /<a href="(.*?)"/g
 const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
 
 // Common request modifier for all Patreon requests
@@ -663,8 +658,8 @@ function campaignToPlatformChannel(channel, links) {
 function parseSinglePost(item, data, context, isDetails=false) {
     if (!item) return null;
 
-    if (isDetails) {
-        // Throw unsupported error for PlatformNestedMediaContent or PlatformPostDetails
+    if (isDetails && !IS_DESKTOP) {
+        // Android deep links don't support embeds, text-only, or image-file posts (no PlatformPostDetails / PlatformNestedMediaContent UI).
         if (item?.attributes?.embed || 
             item?.attributes?.post_type == 'text_only' ||
             item?.attributes?.post_type == 'image_file') {
@@ -934,16 +929,7 @@ function pmApplyMark(mark, text) {
 	}
 }
 
-function htmlToPlainText(html) {
-	if (!html) return '';
-	try {
-		return domParser.parseFromString(html).text;
-	} catch (e) {
-		return html;
-	}
-}
-
-// Returns post body content. On Android: HTML. On Desktop: plain text (no renderer).
+// Returns post body content as HTML. Desktop renders Type.Text.HTML via innerHTML; Android renders HTML in PlatformPostDetails / segments.
 function getPostHtmlContent(attrs) {
 	let html = '';
 	if (attrs?.content) {
@@ -953,7 +939,7 @@ function getPostHtmlContent(attrs) {
 			html = proseMirrorToHtml(JSON.parse(attrs.content_json_string));
 		} catch (e) { /* fall through */ }
 	}
-	return IS_DESKTOP ? htmlToPlainText(html) : html;
+	return html;
 }
 
 // Returns plain text from a ProseMirror inline node array (for heading content)
@@ -1423,7 +1409,5 @@ function httpGET(options) {
 
     return resp.body;
 }
-
-
 
 log("LOADED");

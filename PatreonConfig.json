@@ -23,6 +23,7 @@
 	],
 	"changelog": {
 		"27": [
+			"Fix: Post content (text) support on Desktop;",
 			"Improvement: Enable article support for text and image posts (richer content) on Android app builds 381+;"
 		],
 		"26": [
