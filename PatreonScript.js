@@ -24,6 +24,21 @@ const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators
 
 const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
 
+// MIME container types by audio file extension, so the player can pick a decoder.
+// Patreon serves rendered audio as .mp3/.wav; the rest cover original uploads.
+const AUDIO_CONTAINER_BY_EXTENSION = {
+	mp3: "audio/mpeg",
+	m4a: "audio/mp4",
+	mp4: "audio/mp4",
+	aac: "audio/aac",
+	ogg: "audio/ogg",
+	oga: "audio/ogg",
+	flac: "audio/flac",
+	wav: "audio/wav"
+};
+
+const DEFAULT_AUDIO_CONTAINER = "audio/mpeg";
+
 // Common request modifier for all Patreon requests
 let PATREON_REQUEST_MODIFIER = {
 	headers: {
@@ -1130,6 +1145,7 @@ function mapToAudioContent(post, context) {
 		video: new UnMuxVideoSourceDescriptor([], [
 			new AudioUrlSource({
 				name: "Audio",
+				container: getAudioContainer(attrs.post_file.url),
 				url: attrs.post_file.url,
 				duration: attrs.post_file.duration,
 				requestModifier: PATREON_REQUEST_MODIFIER
@@ -1313,6 +1329,14 @@ function mapToLockedContent(post, context) {
 		lockDescription: "Exclusive for members",
 		unlockUrl: attrs.url || (BASE_URL + "/posts/" + post.id),
 	});
+}
+
+// Maps an audio file URL to its MIME container type. Patreon puts the real extension
+// as the final path segment (e.g. .../1.mp3?token=...); falls back to audio/mpeg.
+function getAudioContainer(url) {
+	const path = (url || "").split('?')[0];
+	const ext = path.split('.').pop().toLowerCase();
+	return AUDIO_CONTAINER_BY_EXTENSION[ext] || DEFAULT_AUDIO_CONTAINER;
 }
 
 // Creates appropriate video descriptor based on file type
