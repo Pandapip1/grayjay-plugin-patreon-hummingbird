@@ -24,6 +24,20 @@ const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators
 
 const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
 
+// Grayjay content type for media (video/audio). Playlist contents must be PlatformVideo only
+// (the app deserializes playlist.contents via JSVideoPager and requires Duration), so collection
+// posts that aren't video/audio (text, image, nested embeds, locked) are filtered out.
+const CONTENT_TYPE_MEDIA = 1;
+
+// Collections (exposed as channel playlists). Single collection uses the query-param form
+// (https://www.patreon.com/cw/{vanity}/collections?collection_id={id});
+const REGEX_COLLECTION_URL = /https:\/\/(?:www\.)?patreon\.com\/cw\/([^\/?#]+)\/collections\?(?:[^#]*&)?collection_id=(\d+)/s
+const REGEX_COLLECTIONS_PATH = /https:\/\/(?:www\.)?patreon\.com\/cw\/[^\/?#]+\/collections(?:[\/?#]|$)/s
+
+// Sort options for playlist (collection) contents, indexed by the "playlistSortOrderIndex" Dropdown.
+// collection_order = creator's curated order; -published_at = newest first; published_at = oldest first.
+const PLAYLIST_SORTS = ["collection_order", "-published_at", "published_at"];
+
 // MIME container types by audio file extension, so the player can pick a decoder.
 // Patreon serves rendered audio as .mp3/.wav; the rest cover original uploads.
 const AUDIO_CONTAINER_BY_EXTENSION = {
@@ -181,6 +195,7 @@ class HomePager extends ContentPager {
 
 //Channel
 source.isChannelUrl = function (url) {
+	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs route to getPlaylist, not channel
 	return REGEX_CHANNEL_URL.test(url);
 };
 
@@ -402,6 +417,150 @@ class ChannelContentPager extends ContentPager {
 	}
 }
 
+source.getChannelPlaylists = function (url) {
+	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
+	state.channelCache[url] = channel;
+
+	const campaignId = channel?.id?.value;
+	const vanity = getVanityFromChannel(channel);
+	if (!campaignId || !vanity) {
+		return new PlaylistPager([], false);
+	}
+
+	try {
+		const data = httpGET({
+			url: BASE_URL_API + "/campaigns/" + campaignId + "?include=collections",
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		const author = new PlatformAuthorLink(
+			new PlatformID(config.name, campaignId, config.id, PLATFORM_CLAIMTYPE),
+			channel.name, 
+			channel.url, 
+			channel.thumbnail, 
+			channel.subscribers || 0
+		);
+
+		const collections = (data?.included ?? []).filter(i => i.type === "collection");
+		if (collections.length === 0) {
+			return new PlaylistPager([], false);
+		}
+
+		// Default (cheap) path: no extra requests. List all collections with unknown count and
+		// without hiding empty/non-media ones. Enable "Load extra playlist info" for accurate data.
+		if (!isSettingEnabled(_settings?.playlistFetchExtraInfo)) {
+			return new PlaylistPager(
+				collections.map(c => collectionToPlatformPlaylist(c, vanity, author, -1)),
+				false);
+		}
+
+		// Probe each collection's playable-media count in one parallel batch (page[size]=1 ->
+		// meta.pagination.total). Lets us set an accurate videoCount and drop collections that
+		// contain no playable media (e.g. polls/links), which would otherwise be empty playlists.
+		const batch = http.batch();
+		collections.forEach(c => batch.GET(collectionMediaPostsUrl(campaignId, c.id, 1), PATREON_REQUEST_MODIFIER.headers, true));
+		const resps = batch.execute();
+
+		const playlists = [];
+		collections.forEach((c, i) => {
+			let total = -1; // unknown -> keep the collection (fail-open)
+			try {
+				const r = resps[i];
+				if (r && r.isOk) total = JSON.parse(r.body)?.meta?.pagination?.total ?? -1;
+			} catch (e) { /* keep as unknown */ }
+
+			if (total === 0) return; // no playable media -> hide
+			playlists.push(collectionToPlatformPlaylist(c, vanity, author, total));
+		});
+
+		return new PlaylistPager(playlists, false);
+	} catch (error) {
+		log("Failed to get channel playlists: " + error.message);
+		return new PlaylistPager([], false);
+	}
+};
+
+source.isPlaylistUrl = function (url) {
+	return REGEX_COLLECTION_URL.test(url);
+};
+
+source.getPlaylist = function (url) {
+	const match = REGEX_COLLECTION_URL.exec(url);
+	if (!match) {
+		throw new ScriptException("Invalid collection url");
+	}
+	const vanity = match[1];
+	const collectionId = match[2];
+
+	const channelUrl = BASE_URL + "/" + vanity;
+	const channel = (state.channelCache[channelUrl]) ? state.channelCache[channelUrl] : source.getChannel(channelUrl);
+	state.channelCache[channelUrl] = channel;
+	const campaignId = channel?.id?.value;
+
+	const data = httpGET({
+		url: BASE_URL_API + "/campaigns/" + campaignId + "?include=collections",
+		useAuthenticated: true,
+		parseResponse: true
+	});
+	const col = (data?.included ?? []).find(i => i.type === "collection" && i.id === collectionId);
+	if (!col) {
+		throw new UnavailableException("Collection not found");
+	}
+
+	const author = new PlatformAuthorLink(
+		new PlatformID(config.name, campaignId, config.id, PLATFORM_CLAIMTYPE),
+		channel.name, 
+		channel.url, 
+		channel.thumbnail, 
+		channel.subscribers || 0
+	);
+
+	const context = { name: channel.name, url: channel.url, thumbnail: channel.thumbnail, subscribers: channel.subscribers || 0 };
+
+	const contents = new CollectionVideoPager(campaignId, collectionId, context);
+	const base = collectionToPlatformPlaylist(col, vanity, author, contents.total);
+
+	return new PlatformPlaylistDetails({
+		id: base.id,
+		name: base.name,
+		author: base.author,
+		url: base.url,
+		thumbnail: base.thumbnail,
+		videoCount: base.videoCount,
+		datetime: base.datetime,
+		contents: contents
+	});
+};
+
+class CollectionVideoPager extends VideoPager {
+	constructor(campaignId, collectionId, context) {
+		const initialResults = getPosts(campaignId, context, undefined, collectionId);
+		super(initialResults.results.filter(onlyMedia), !!initialResults.nextPage);
+		this.nextPageUrl = initialResults.nextPage;
+		this.campaignId = campaignId;
+		this.collectionId = collectionId;
+		this.context = context;
+		this.total = (typeof initialResults.total === "number") ? initialResults.total : -1;
+	}
+	nextPage() {
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
+		const newResults = getPosts(this.campaignId, this.context, this.nextPageUrl, this.collectionId) ?? { results: [] };
+		this.results = (newResults.results ?? []).filter(onlyMedia);
+		this.nextPageUrl = newResults.nextPage;
+		this.hasMore = !!newResults.nextPage;
+		return this;
+	}
+}
+
+// Playlist contents must be PlatformVideo (the app reads Duration on each item); keep only video/audio posts.
+function onlyMedia(content) {
+	return content != null && content.contentType === CONTENT_TYPE_MEDIA;
+}
+
 source.getChannelTemplateByClaimMap = () => {
 	return {
 		//Patreon
@@ -413,6 +572,7 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
+	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs are playlists, not content
 	return REGEX_URL_ID.test(url);
 };
 
@@ -592,14 +752,17 @@ source.getUserSubscriptions = function () {
 	}
 }
 
-function getPosts(campaign, context, nextPage) {
+function getPosts(campaign, context, nextPage, collectionId) {
 	try {
 		const data = httpGET({
 			url: (!nextPage) ? BASE_URL_API + "/posts" +
 				"?filter[campaign_id]=" + campaign +
+				// Collections only list playable media; filter[media_types] does this server-side
+				// and collection_order preserves the creator's intended order.
+				(collectionId ? "&filter[collection_id]=" + collectionId + "&filter[media_types]=video,audio" : "") +
 				"&include=images,media" +
 				"&filter[contains_exclusive_posts]=true" +
-				"&sort=-published_at" +
+				"&sort=" + (collectionId ? getPlaylistSort() : "-published_at") +
 				"&fields[post]=title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail" +
 				"&fields[media]=id,image_urls,display,download_url,metadata,file_name,state" : nextPage,
 			useAuthenticated: true,
@@ -616,7 +779,8 @@ function getPosts(campaign, context, nextPage) {
 
 		return {
 			results: contents,
-			nextPage: data?.links?.next
+			nextPage: data?.links?.next,
+			total: data?.meta?.pagination?.total
 		};
 	} catch (error) {
 		log("Failed to get posts: " + error.message);
@@ -854,7 +1018,7 @@ function getHomeContent(url) {
 			parseResponse: true
 		});
 	const contents = [];
-	
+
 	// Build lookup maps for efficient access
 	const includedMap = createIncludedLookupMap(data.included);
 	
@@ -1464,5 +1628,51 @@ function httpGET(options) {
 
     return resp.body;
 }
+
+
+// Extracts the vanity slug from a resolved channel's url (channel.url == https://www.patreon.com/{vanity})
+function getVanityFromChannel(channel) {
+	const m = (channel?.url || "").match(/patreon\.com\/([^\/?#]+)/);
+	return m ? m[1] : null;
+}
+
+// Boolean settings arrive as real booleans from the app; coerce defensively (string "true" in tests).
+function isSettingEnabled(v) {
+	return v === true || v === "true";
+}
+
+// Resolves the configured playlist sort param from the "playlistSortOrderIndex" Dropdown setting.
+function getPlaylistSort() {
+	return PLAYLIST_SORTS[parseInt(_settings?.playlistSortOrderIndex ?? 0)] || PLAYLIST_SORTS[0];
+}
+
+// videoCount: count of playable media in the collection (from filter[media_types]=video,audio,
+// meta.pagination.total). Pass -1 when unknown. Patreon's num_posts counts ALL post types
+// (polls/images/text), so it can't be used here.
+function collectionToPlatformPlaylist(col, vanity, author, videoCount) {
+	const a = col.attributes || {};
+	return new PlatformPlaylist({
+		id: new PlatformID(config.name, col.id, config.id, PLATFORM_CLAIMTYPE),
+		name: a.title || "Collection",
+		author: author,
+		url: BASE_URL + "/cw/" + vanity + "/collections?collection_id=" + col.id,
+		thumbnail: a.thumbnail?.thumbnail_large || a.thumbnail?.original || a.thumbnail?.thumbnail || null,
+		videoCount: (typeof videoCount === "number") ? videoCount : -1,
+		datetime: a.created_at ? Math.floor(Date.parse(a.created_at) / 1000) : 0
+	});
+}
+
+// URL that returns only the playable-media posts of a collection (cheap count probe with page[size]=1).
+function collectionMediaPostsUrl(campaignId, collectionId, pageSize) {
+	return BASE_URL_API + "/posts" +
+		"?filter[campaign_id]=" + campaignId +
+		"&filter[collection_id]=" + collectionId +
+		"&filter[media_types]=video,audio" +
+		"&filter[contains_exclusive_posts]=true" +
+		"&sort=collection_order" +
+		"&fields[post]=post_type" +
+		(pageSize ? "&page[size]=" + pageSize : "");
+}
+
 
 log("LOADED");

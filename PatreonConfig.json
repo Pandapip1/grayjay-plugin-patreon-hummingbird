@@ -78,6 +78,31 @@
 			"description": "Hides content you do not have access for due to missing payment",
 			"type": "Boolean",
 			"default": "false"
+		},
+		{
+			"variable": "playlistsHeader",
+			"name": "Playlists",
+			"description": "Settings for creator collections shown as playlists.",
+			"type": "Header"
+		},
+		{
+			"variable": "playlistFetchExtraInfo",
+			"name": "Load extra playlist info",
+			"description": "Send extra (batched) requests when listing a creator's playlists to show accurate item counts and hide empty (non-media) collections. May slow down loading.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "playlistSortOrderIndex",
+			"name": "Playlist sort order",
+			"description": "Order of items inside a collection/playlist.",
+			"type": "Dropdown",
+			"default": "0",
+			"options": [
+				"Collection order",
+				"Newest first",
+				"Oldest first"
+			]
 		}
 	],
 	
