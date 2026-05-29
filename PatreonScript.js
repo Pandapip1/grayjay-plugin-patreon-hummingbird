@@ -268,7 +268,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 // Function to get channel information from user ID (for profile/creators URLs)
 function getChannelFromUserId(userId, originalUrl) {
 	// First, try to get user information from the API
-	const userApiUrl = BASE_URL_API + "/user/" + userId + "?include=campaign";
+	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign" });
 	const userData = httpGET({
 		url: userApiUrl,
 		useAuthenticated: true,
@@ -435,7 +435,7 @@ source.getChannelPlaylists = function (url) {
 
 	try {
 		const data = httpGET({
-			url: BASE_URL_API + "/campaigns/" + campaignId + "?include=collections",
+			url: BASE_URL_API + "/campaigns/" + campaignId + "?" + buildQuery({ "include": "collections" }),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -505,7 +505,7 @@ source.getPlaylist = function (url) {
 	const campaignId = channel?.id?.value;
 
 	const data = httpGET({
-		url: BASE_URL_API + "/campaigns/" + campaignId + "?include=collections",
+		url: BASE_URL_API + "/campaigns/" + campaignId + "?" + buildQuery({ "include": "collections" }),
 		useAuthenticated: true,
 		parseResponse: true
 	});
@@ -614,16 +614,17 @@ source.getComments = function (url, page = 0) {
 	
 	try {
 		const commentsData = httpGET({
-			url: "https://www.patreon.com/api/posts/" + id + "/comments" +
-				"?include=include_replies%2Ccommenter%2Creplies%2Creplies.commenter" +
-				"&fields[comment]=body%2Ccreated%2Cvote_sum%2Creply_count" +
-				"&fields[post]=comment_count" +
-				"&fields[user]=image_url%2Cfull_name%2Curl" +
-				"&fields[flair]=image_tiny_url%2Cname" +
-				"&page[count]=10" +
-				"&sort=-created" +
-				"&json-api-use-default-includes=false" +
-				"&json-api-version=1.0",
+			url: BASE_URL_API + "/posts/" + id + "/comments?" + buildQuery({
+				"include": "include_replies,commenter,replies,replies.commenter",
+				"fields[comment]": "body,created,vote_sum,reply_count",
+				"fields[post]": "comment_count",
+				"fields[user]": "image_url,full_name,url",
+				"fields[flair]": "image_tiny_url,name",
+				"page[count]": 10,
+				"sort": "-created",
+				"json-api-use-default-includes": "false",
+				"json-api-version": "1.0"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -743,7 +744,7 @@ class PatreonCommentPager extends CommentPager {
 source.getUserSubscriptions = function () {
 	try {
 		const response = httpGET({
-			url: URL_USER + "?include=active_memberships.campaign",
+			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign" }),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -761,18 +762,21 @@ source.getUserSubscriptions = function () {
 function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 	try {
 		const data = httpGET({
-			url: (!nextPage) ? BASE_URL_API + "/posts" +
-				"?filter[campaign_id]=" + campaign +
-				// Collections only list playable media; filter[media_types] does this server-side
-				// and collection_order preserves the creator's intended order.
-				(collectionId ? "&filter[collection_id]=" + collectionId + "&filter[media_types]=video,audio" : "") +
+			// nextPage is a verbatim links.next cursor URL — never rebuild it.
+			url: nextPage ? nextPage : BASE_URL_API + "/posts?" + buildQuery({
+				"filter[campaign_id]": campaign,
+				// Collections only list playable media (filter[media_types], server-side) and
+				// collection_order preserves the creator's intended order.
+				"filter[collection_id]": collectionId,
+				"filter[media_types]": collectionId ? "video,audio" : undefined,
 				// Channel content search (server-side, scoped to the campaign).
-				(searchQuery ? "&filter[search_query]=" + encodeURIComponent(searchQuery) : "") +
-				"&include=images,media" +
-				"&filter[contains_exclusive_posts]=true" +
-				"&sort=" + (collectionId ? getPlaylistSort() : "-published_at") +
-				"&fields[post]=title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail" +
-				"&fields[media]=id,image_urls,display,download_url,metadata,file_name,state" : nextPage,
+				"filter[search_query]": searchQuery,
+				"include": "images,media",
+				"filter[contains_exclusive_posts]": "true",
+				"sort": collectionId ? getPlaylistSort() : "-published_at",
+				"fields[post]": "title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail",
+				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -800,10 +804,12 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 	}
 }
 
-const SOCIAL_LINKS_QUERY = "&include=connected_socials,creator" +
-	"&fields[connected_socials]=app_name,external_profile_url,is_public" +
-	"&fields[user]=youtube,twitter,twitch,facebook" +
-	"&json-api-use-default-includes=false";
+const SOCIAL_LINKS_QUERY = buildQuery({
+	"include": "connected_socials,creator",
+	"fields[connected_socials]": "app_name,external_profile_url,is_public",
+	"fields[user]": "youtube,twitter,twitch,facebook",
+	"json-api-use-default-includes": "false"
+});
 
 const SOCIAL_APP_NAME_MAP = {
 	"youtube": "YouTube",
@@ -892,10 +898,12 @@ function parseSinglePost(item, data, context, isDetails=false) {
 function searchChannels(query, page) {
 	try {
 		const data = httpGET({
-			url: URL_SEARCH_CREATORS +
-				"?q=" + query +
-				"&page[number]=" + page +
-				"&json-api-version=1.0&includes=[]",
+			url: URL_SEARCH_CREATORS + "?" + buildQuery({
+				"q": query,
+				"page[number]": page,
+				"json-api-version": "1.0",
+				"includes": "[]"
+			}),
 			useAuthenticated: false,
 			parseResponse: true
 		});
@@ -920,18 +928,21 @@ function searchChannels(query, page) {
 function searchPosts(query, cursor) {
 	try {
 		const data = httpGET({
-			url: URL_SEARCH_POSTS +
-				"?sort=relevance" +
-				"&filter[query]=" + encodeURIComponent(query) +
-				"&filter[is_for_preview]=false" +
-				"&filter[filter_by_user_subscription]=false" +
-				"&filter[include_nsfw]=true" +
-				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
-				"&fields[post]=comment_count%2Ccontent%2Ccontent_json_string%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
-				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
-				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
-				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
-				"&json-api-version=1.0&json-api-use-default-includes=false",
+			url: URL_SEARCH_POSTS + "?" + buildQuery({
+				"sort": "relevance",
+				"filter[query]": query,
+				"filter[is_for_preview]": "false",
+				"filter[filter_by_user_subscription]": "false",
+				"filter[include_nsfw]": "true",
+				"fields[campaign]": "name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
+				"fields[post]": "comment_count,content,content_json_string,content_teaser_text,created_at,current_user_can_view,embed,image,like_count,post_file,post_metadata,published_at,post_type,teaser_text,thumbnail,thumbnail_url,title,url,video,video_preview",
+				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media",
+				"page[size]": 20,
+				"page[cursor]": cursor || "",
+				"json-api-version": "1.0",
+				"json-api-use-default-includes": "false"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -986,38 +997,23 @@ function getPostIdFromUrl(url) {
 
 // Function to get home content from launcher/cards API
 function getHomeContent(url) {
-	const requestUrl = url || (URL_LAUNCHER_CARDS + 
-		"?include=campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null," +
-		"latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null," +
-		"latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity," +
-		"latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity," +
-		"latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null," +
-		"latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post," +
-		"latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null," +
-		"latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice," +
-		"latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows," +
-		"latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null," +
-		"latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null," +
-		"latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media," +
-		"upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null%5E" +
-		"&fields%5Bcampaign%5D=id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency," +
-		"current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count," +
-		"pledge_url,primary_theme_color,summary,is_monthly%5E" +
-		"&fields%5Bcomment%5D=body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state" +
-		"&fields%5Bcontent-unlock-option%5D=content_unlock_type,reward_benefit_categories" +
-		"&fields%5Bdisplay-identity%5D=name,link_url" +
-		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment," +
-		"current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason," +
-		"embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type," +
-		"post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview" +
-		"&fields%5Bproduct-variant%5D=name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url" +
-		"&fields%5Bdrop%5D=created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count" +
-		"&fields%5Bmedia%5D=id,image_urls,display,download_url,metadata,file_name,state" +
-		"&fields%5Blivestream%5D=state,display" +
-		"&filter%5Bshow_shop_posts%5D=false" +
-		"&json-api-version=1.0" +
-		"&json-api-use-default-includes=false" +
-		"&page%5Bcount%5D=10");
+	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
+	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
+		"include": "campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null,latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null,latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity,latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity,latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null,latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post,latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null,latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice,latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows,latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null,latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null,latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media,upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null",
+		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
+		"fields[comment]": "body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state",
+		"fields[content-unlock-option]": "content_unlock_type,reward_benefit_categories",
+		"fields[display-identity]": "name,link_url",
+		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
+		"fields[product-variant]": "name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url",
+		"fields[drop]": "created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count",
+		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+		"fields[livestream]": "state,display",
+		"filter[show_shop_posts]": "false",
+		"json-api-version": "1.0",
+		"json-api-use-default-includes": "false",
+		"page[count]": 10
+	}));
 	
 	try {
 		const data = httpGET({
@@ -1289,7 +1285,29 @@ source.getContentRecommendations = function (url) {
 			subscribers: campaign.attributes?.patron_count || 0
 		};
 
-		const requestUrl = `https://www.patreon.com/api/related_posts/${campaign.id}/${postId}?include=campaign%2Caccess_rules%2Caccess_rules.tier.null%2Cattachments_media%2Caudio%2Caudio_preview.null%2Ccustom_thumbnail_media.null%2Cdrop%2Cimages%2Cmedia%2Cnative_video_insights%2Cpoll.choices%2Cpoll.current_user_responses.user%2Cpoll.current_user_responses.choice%2Cpoll.current_user_responses.poll%2Cshows.null%2Cuser%2Cuser_defined_tags%2Cvideo.null%2Ccontent_unlock_options.product_variant.null%2Ccontent_unlock_options.reward.null%2Ccontent_unlock_options.product_variant.collection.null%2Clivestream%2Clivestream.state%2Clivestream.display%2Crss_synced_feed%2Cpost_new_comment_identity%2Cpost_new_comment_identity.avatar%2Cpost_new_comment_identity.community_profile%2Cpost_new_comment_identity.identity_badges&fields[campaign]=currency%2Cshow_audio_post_download_links%2Cavatar_photo_url%2Cavatar_photo_image_urls%2Cearnings_visibility%2Cis_nsfw%2Cis_monthly%2Cname%2Curl%2Cpatron_count%2Cprimary_theme_color&fields[post]=attachments_preview_metadata%2Cchange_visibility_at%2Ccomment_count%2Ccommenter_count%2Ccontent%2Ccontent_json_string%2Ccreated_at%2Ccurrent_user_can_comment%2Ccurrent_user_can_delete%2Ccurrent_user_can_report%2Ccurrent_user_can_view%2Ccurrent_user_comment_disallowed_reason%2Ccurrent_user_has_liked%2Cembed%2Cimage%2Cinsights_last_updated_at%2Cis_paid%2Cis_preview_blurred%2Chas_custom_thumbnail%2Clike_count%2Cmeta_image_url%2Cmin_cents_pledged_to_view%2Cmonetization_ineligibility_reason%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpatreon_url%2Cpost_type%2Cpledge_url%2Cpreview_asset_type%2Cthumbnail%2Cthumbnail_url%2Cteaser_text%2Cteaser_text_json_string%2Ccontent_teaser_text%2Ccleaned_teaser_text%2Ctitle%2Cupgrade_url%2Curl%2Cwas_posted_by_campaign_owner%2Chas_ti_violation%2Cmoderation_status%2Cpost_level_suspension_removal_date%2Cpls_one_liners_by_category%2Cvideo%2Cvideo_preview%2Cview_count%2Ccontent_unlock_options%2Cis_new_to_current_user%2Cwatch_state&fields[post_tag]=tag_type%2Cvalue&fields[user]=image_url%2Cfull_name%2Curl&fields[access_rule]=access_rule_type%2Camount_cents&fields[livestream]=display%2Cstate&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate&fields[native_video_insights]=average_view_duration%2Caverage_view_pct%2Chas_preview%2Cid%2Clast_updated_at%2Cnum_views%2Cpreview_views%2Cvideo_duration&fields[content-unlock-option]=content_unlock_type%2Cis_current_user_eligible%2Creward_benefit_categories&fields[product-variant]=price_cents%2Ccurrency_code%2Ccheckout_url%2Cis_hidden%2Cpublished_at_datetime%2Ccontent_type%2Corders_count%2Caccess_metadata%2Clive_sale_discounted_price_cents%2Clive_sale_discounted_price_info&fields[shows]=id%2Ctitle%2Cdescription%2Cthumbnail&fields[display-identity]=name%2Clink_url&fields[primary-image]=image_icon&fields[identity-badge]=badge_type&page[cursor]=null&page[count]=5&filter[is_by_creator]=true&filter[contains_exclusive_posts]=true&json-api-use-default-includes=false&json-api-version=1.0`;
+		const requestUrl = BASE_URL_API + "/related_posts/" + campaign.id + "/" + postId + "?" + buildQuery({
+			"include": "campaign,access_rules,access_rules.tier.null,attachments_media,audio,audio_preview.null,custom_thumbnail_media.null,drop,images,media,native_video_insights,poll.choices,poll.current_user_responses.user,poll.current_user_responses.choice,poll.current_user_responses.poll,shows.null,user,user_defined_tags,video.null,content_unlock_options.product_variant.null,content_unlock_options.reward.null,content_unlock_options.product_variant.collection.null,livestream,livestream.state,livestream.display,rss_synced_feed,post_new_comment_identity,post_new_comment_identity.avatar,post_new_comment_identity.community_profile,post_new_comment_identity.identity_badges",
+			"fields[campaign]": "currency,show_audio_post_download_links,avatar_photo_url,avatar_photo_image_urls,earnings_visibility,is_nsfw,is_monthly,name,url,patron_count,primary_theme_color",
+			"fields[post]": "attachments_preview_metadata,change_visibility_at,comment_count,commenter_count,content,content_json_string,created_at,current_user_can_comment,current_user_can_delete,current_user_can_report,current_user_can_view,current_user_comment_disallowed_reason,current_user_has_liked,embed,image,insights_last_updated_at,is_paid,is_preview_blurred,has_custom_thumbnail,like_count,meta_image_url,min_cents_pledged_to_view,monetization_ineligibility_reason,post_file,post_metadata,published_at,patreon_url,post_type,pledge_url,preview_asset_type,thumbnail,thumbnail_url,teaser_text,teaser_text_json_string,content_teaser_text,cleaned_teaser_text,title,upgrade_url,url,was_posted_by_campaign_owner,has_ti_violation,moderation_status,post_level_suspension_removal_date,pls_one_liners_by_category,video,video_preview,view_count,content_unlock_options,is_new_to_current_user,watch_state",
+			"fields[post_tag]": "tag_type,value",
+			"fields[user]": "image_url,full_name,url",
+			"fields[access_rule]": "access_rule_type,amount_cents",
+			"fields[livestream]": "display,state",
+			"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+			"fields[native_video_insights]": "average_view_duration,average_view_pct,has_preview,id,last_updated_at,num_views,preview_views,video_duration",
+			"fields[content-unlock-option]": "content_unlock_type,is_current_user_eligible,reward_benefit_categories",
+			"fields[product-variant]": "price_cents,currency_code,checkout_url,is_hidden,published_at_datetime,content_type,orders_count,access_metadata,live_sale_discounted_price_cents,live_sale_discounted_price_info",
+			"fields[shows]": "id,title,description,thumbnail",
+			"fields[display-identity]": "name,link_url",
+			"fields[primary-image]": "image_icon",
+			"fields[identity-badge]": "badge_type",
+			"page[cursor]": "null",
+			"page[count]": 5,
+			"filter[is_by_creator]": "true",
+			"filter[contains_exclusive_posts]": "true",
+			"json-api-use-default-includes": "false",
+			"json-api-version": "1.0"
+		});
 		
 		const data = httpGET({
 			url: requestUrl,
@@ -1594,6 +1612,27 @@ function throwIfCaptcha(resp) {
 
 
 /**
+ * Builds a query string (without leading "?") from a params object.
+ * Encodes values only (keys stay literal, so Patreon's bracketed keys like filter[campaign_id],
+ * fields[post], page[cursor] are preserved). Array values become repeated keys (key=a&key=b).
+ * undefined/null params are skipped (use for conditional params); "" and 0 are kept.
+ */
+function buildQuery(params) {
+	const parts = [];
+	for (const key in params) {
+		const v = params[key];
+		if (v === undefined || v === null) continue;
+		if (Array.isArray(v)) {
+			for (const item of v)
+				if (item !== undefined && item !== null) parts.push(key + "=" + encodeURIComponent(item));
+		} else {
+			parts.push(key + "=" + encodeURIComponent(v));
+		}
+	}
+	return parts.join("&");
+}
+
+/**
  * Gets the requested url and returns the response body either as a string or as a parsed json object
  * @param {Object} options - The options object
  * @param {string} options.url - The URL to call
@@ -1672,14 +1711,15 @@ function collectionToPlatformPlaylist(col, vanity, author, videoCount) {
 
 // URL that returns only the playable-media posts of a collection (cheap count probe with page[size]=1).
 function collectionMediaPostsUrl(campaignId, collectionId, pageSize) {
-	return BASE_URL_API + "/posts" +
-		"?filter[campaign_id]=" + campaignId +
-		"&filter[collection_id]=" + collectionId +
-		"&filter[media_types]=video,audio" +
-		"&filter[contains_exclusive_posts]=true" +
-		"&sort=collection_order" +
-		"&fields[post]=post_type" +
-		(pageSize ? "&page[size]=" + pageSize : "");
+	return BASE_URL_API + "/posts?" + buildQuery({
+		"filter[campaign_id]": campaignId,
+		"filter[collection_id]": collectionId,
+		"filter[media_types]": "video,audio",
+		"filter[contains_exclusive_posts]": "true",
+		"sort": "collection_order",
+		"fields[post]": "post_type",
+		"page[size]": pageSize
+	});
 }
 
 class SearchChannelContentPager extends ContentPager {
