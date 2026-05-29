@@ -417,6 +417,12 @@ class ChannelContentPager extends ContentPager {
 	}
 }
 
+source.searchChannelContents = function (url, query, type, order, filters) {
+	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
+	state.channelCache[url] = channel;
+	return new SearchChannelContentPager(channel.id.value, channel, query);
+};
+
 source.getChannelPlaylists = function (url) {
 	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
 	state.channelCache[url] = channel;
@@ -752,7 +758,7 @@ source.getUserSubscriptions = function () {
 	}
 }
 
-function getPosts(campaign, context, nextPage, collectionId) {
+function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 	try {
 		const data = httpGET({
 			url: (!nextPage) ? BASE_URL_API + "/posts" +
@@ -760,6 +766,8 @@ function getPosts(campaign, context, nextPage, collectionId) {
 				// Collections only list playable media; filter[media_types] does this server-side
 				// and collection_order preserves the creator's intended order.
 				(collectionId ? "&filter[collection_id]=" + collectionId + "&filter[media_types]=video,audio" : "") +
+				// Channel content search (server-side, scoped to the campaign).
+				(searchQuery ? "&filter[search_query]=" + encodeURIComponent(searchQuery) : "") +
 				"&include=images,media" +
 				"&filter[contains_exclusive_posts]=true" +
 				"&sort=" + (collectionId ? getPlaylistSort() : "-published_at") +
@@ -1672,6 +1680,28 @@ function collectionMediaPostsUrl(campaignId, collectionId, pageSize) {
 		"&sort=collection_order" +
 		"&fields[post]=post_type" +
 		(pageSize ? "&page[size]=" + pageSize : "");
+}
+
+class SearchChannelContentPager extends ContentPager {
+	constructor(campaignId, channel, query) {
+		const initialResults = getPosts(campaignId, channel, undefined, undefined, query);
+		super(initialResults.results, !!initialResults.nextPage);
+		this.nextPageUrl = initialResults.nextPage;
+		this.campaignId = campaignId;
+		this.channel = channel;
+		this.query = query;
+	}
+	nextPage() {
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
+		const newResults = getPosts(this.campaignId, this.channel, this.nextPageUrl, undefined, this.query) ?? { results: [] };
+		this.results = newResults.results;
+		this.nextPageUrl = newResults.nextPage;
+		this.hasMore = !!newResults.nextPage;
+		return this;
+	}
 }
 
 
