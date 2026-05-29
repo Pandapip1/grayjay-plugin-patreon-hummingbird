@@ -467,7 +467,34 @@ source.getComments = function (url, page = 0) {
 	}
 }
 source.getSubComments = function (comment) {
-	return new CommentPager([], false);
+	if (typeof comment === 'string')
+		comment = JSON.parse(comment);
+
+	// replies were stored as a JSON string in context (see parseComment)
+	let replyData = [];
+	
+	try {
+		replyData = JSON.parse(comment?.context?.replies ?? "[]");
+	}
+	catch (e) {
+		replyData = [];
+	}
+
+	const replies = replyData.map(r => new Comment({
+		contextUrl: comment.contextUrl,
+		author: new PlatformAuthorLink(
+			new PlatformID(config.name, r.id, PLATFORM_CLAIMTYPE), 
+			r.authorName, 
+			r.authorUrl, 
+			r.authorImage
+		),
+		message: r.message ?? "",
+		rating: new RatingLikes(r.voteSum ?? 0),
+		date: r.date,
+		replyCount: r.replyCount ?? 0
+	}));
+
+	return new CommentPager(replies, false);
 }
 
 class PatreonCommentPager extends CommentPager {
@@ -513,33 +540,37 @@ class PatreonCommentPager extends CommentPager {
 		if (!commenter)
 			return null;
 
-		return new PatreonComment({
+		const replies = (comment.relationships?.replies?.data ?? [])
+			.map(y => resp.included?.find(z => z.id == y.id))
+			.filter(y => y != null)
+			.map(y => {
+				const rCommenter = resp.included?.find(z => z.id == y?.relationships?.commenter?.data?.id);
+				if (!rCommenter)
+					return null;
+				return {
+					id: y.id,
+					authorName: rCommenter.attributes.full_name,
+					authorUrl: rCommenter.attributes.url,
+					authorImage: rCommenter.attributes.image_url,
+					message: y.attributes.body ?? "",
+					voteSum: y.attributes.vote_sum ?? 0,
+					date: parseInt(Date.parse(y.attributes.created) / 1000),
+					replyCount: y.attributes.reply_count ?? 0
+				};
+			})
+			.filter(y => y != null);
+
+		return new Comment({
 			contextUrl: this.contextUrl,
 			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
-			message: comment.attributes.body,
-			rating: new RatingLikes(comment.attributes.vote_sum),
+			message: comment.attributes.body ?? "",
+			rating: new RatingLikes(comment.attributes.vote_sum ?? 0),
 			date: parseInt(Date.parse(comment.attributes.created) / 1000),
 			replyCount: comment.attributes.reply_count ?? 0,
-			subComments: comment.relationships.replies?.data
-				?.map(y => resp.included?.find(z => z.id == y.id))
-				?.map(y => this.parseComment(y, resp))
-				?.filter(z => z != null) ?? []
+			// Must be a string: the app deserializes context into a string->string map
+			// (Android Map<String,String> / Desktop Dictionary<string,string>); a non-string value throws at deserialization.
+			context: { replies: JSON.stringify(replies) }
 		});
-	}
-}
-
-class PatreonComment extends Comment {
-	constructor(obj) {
-		super(obj);
-
-		if (obj.subComments)
-			this.subComments = obj.subComments;
-		else
-			this.subComments = [];
-	}
-
-	getReplies() {
-		return new CommentPager(this.subComments, false);
 	}
 }
 
