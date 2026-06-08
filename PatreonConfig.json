@@ -26,7 +26,7 @@
 			"Fix: Home failing in some circumstances under VPNs;",
 			"Fix: Channel and channel content failing to load under VPNs;",
 			"Improvement: search within a creator's content",
-			"Improvement: expose creator collections as channel playlists;"
+			"Improvement: expose creator collections as channel playlists (android);"
 		],
 		"28": [
 			"Fix: Audio-only posts (podcasts) not playing due to missing media container type;",
