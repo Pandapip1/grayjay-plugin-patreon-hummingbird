@@ -99,16 +99,6 @@ source.getHome = function () {
 		return new ContentPager([], false);
 	}
 
-	try {
-		httpGET({
-			url: BASE_URL,
-			useAuthenticated: false,
-			parseResponse: false
-		});
-	} catch (error) {
-		throw new ScriptException("Failed to get home page");
-	}
-	
 	return new HomePager();
 };
 
@@ -1066,6 +1056,7 @@ function getHomeContent(url) {
 			nextPageUrl: data.links?.next || null
 		};
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		console.log("Failed to get home content: " + error.message);
 		return { results: [], hasMore: false, nextPageUrl: null };
 	}
