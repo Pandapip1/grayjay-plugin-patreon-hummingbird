@@ -24,6 +24,20 @@ const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators
 
 const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
 
+// Grayjay content type for media (video/audio). Playlist contents must be PlatformVideo only
+// (the app deserializes playlist.contents via JSVideoPager and requires Duration), so collection
+// posts that aren't video/audio (text, image, nested embeds, locked) are filtered out.
+const CONTENT_TYPE_MEDIA = 1;
+
+// Collections (exposed as channel playlists). Single collection uses the query-param form
+// (https://www.patreon.com/cw/{vanity}/collections?collection_id={id});
+const REGEX_COLLECTION_URL = /https:\/\/(?:www\.)?patreon\.com\/cw\/([^\/?#]+)\/collections\?(?:[^#]*&)?collection_id=(\d+)/s
+const REGEX_COLLECTIONS_PATH = /https:\/\/(?:www\.)?patreon\.com\/cw\/[^\/?#]+\/collections(?:[\/?#]|$)/s
+
+// Sort options for playlist (collection) contents, indexed by the "playlistSortOrderIndex" Dropdown.
+// collection_order = creator's curated order; -published_at = newest first; published_at = oldest first.
+const PLAYLIST_SORTS = ["collection_order", "-published_at", "published_at"];
+
 // MIME container types by audio file extension, so the player can pick a decoder.
 // Patreon serves rendered audio as .mp3/.wav; the rest cover original uploads.
 const AUDIO_CONTAINER_BY_EXTENSION = {
@@ -85,16 +99,6 @@ source.getHome = function () {
 		return new ContentPager([], false);
 	}
 
-	try {
-		httpGET({
-			url: BASE_URL,
-			useAuthenticated: false,
-			parseResponse: false
-		});
-	} catch (error) {
-		throw new ScriptException("Failed to get home page");
-	}
-	
 	return new HomePager();
 };
 
@@ -181,6 +185,7 @@ class HomePager extends ContentPager {
 
 //Channel
 source.isChannelUrl = function (url) {
+	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs route to getPlaylist, not channel
 	return REGEX_CHANNEL_URL.test(url);
 };
 
@@ -253,7 +258,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 // Function to get channel information from user ID (for profile/creators URLs)
 function getChannelFromUserId(userId, originalUrl) {
 	// First, try to get user information from the API
-	const userApiUrl = BASE_URL_API + "/user/" + userId + "?include=campaign";
+	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign" });
 	const userData = httpGET({
 		url: userApiUrl,
 		useAuthenticated: true,
@@ -303,9 +308,63 @@ function getChannelFromUserId(userId, originalUrl) {
 	throw new ScriptException("Failed to get channel from user ID: " + userId);
 }
 source.getChannel = function (url) {
+	if (state.channelCache[url]) return state.channelCache[url];
+
+	// Profile URLs (patreon.com/profile/creators?u=ID) resolve via the user API.
+	const profileMatch = REGEX_PROFILE_URL.exec(url);
+	if (profileMatch) {
+		const userId = profileMatch[1];
+		const profileChannel = getChannelFromUserId(userId, url);
+		profileChannel.urlAlternatives = Array.from(new Set([url, `https://www.patreon.com/profile/creators?u=${userId}`]));
+		state.channelCache[url] = profileChannel;
+		return profileChannel;
+	}
+
+	// Vanity URLs resolve the campaign through the API. The HTML creator page sits behind a
+	// Cloudflare challenge that raw http.GET have issues, so the API is the primary path.
+	const vanity = getVanityFromUrl(url);
+	if (vanity) {
+		try {
+			const channel = getChannelFromVanity(vanity);
+			if (channel) {
+				channel.urlAlternatives = Array.from(new Set([url, channel.url]));
+				state.channelCache[url] = channel;
+				return channel;
+			}
+		} catch (error) {
+			if (error instanceof CaptchaRequiredException) throw error;
+			if (error.code === 404) throw new UnavailableException("Channel not found");
+			// Any other error: fall through to the legacy HTML scraper below.
+		}
+	}
+
+	// Fallback: legacy HTML scraping (reachable only when the API resolver finds no campaign).
+	return getChannelFromHtml(url);
+};
+
+// Resolves a creator's campaign directly from the API by vanity slug, avoiding the
+// Cloudflare-challenged HTML page. Returns null when no campaign matches the vanity.
+function getChannelFromVanity(vanity) {
+	const data = httpGET({
+		url: BASE_URL_API + "/campaigns?" + buildQuery({
+			"filter[vanity]": vanity,
+			"json-api-version": "1.0"
+		}) + "&" + SOCIAL_LINKS_QUERY,
+		useAuthenticated: true,
+		parseResponse: true
+	});
+	const campaign = data?.data?.[0];
+	if (!campaign) return null;
+	const channel = { campaign: { data: { id: campaign.id, attributes: campaign.attributes } } };
+	return campaignToPlatformChannel(channel, extractSocialLinks(data.included));
+}
+
+// Legacy fallback: scrape the creator's HTML page and parse the bootstrap blob. Only used when
+// the API vanity resolver returns nothing; the HTML page is usually behind a Cloudflare challenge.
+function getChannelFromHtml(url) {
 	let channelResp;
 	let finalUrl;
-	
+
 	try {
 		const response = httpGET({
 			url: url,
@@ -321,17 +380,6 @@ source.getChannel = function (url) {
 	}
 
 	const urlSet = new Set([url, finalUrl]);
-	
-	// Check if this is a profile URL (with or without /creators)
-	const profileMatch = REGEX_PROFILE_URL.exec(finalUrl);
-	if (profileMatch) {
-		const userId = profileMatch[1];
-		const profileChannel = getChannelFromUserId(userId, finalUrl);
-		urlSet.add(`https://www.patreon.com/profile/creators?u=${userId}`);
-		profileChannel.urlAlternatives = Array.from(urlSet);
-		state.channelCache[url] = profileChannel;
-		return profileChannel;
-	}
 
 	let channelJson = REGEX_CHANNEL_DETAILS.exec(channelResp.body);
 	let channel = null;
@@ -402,6 +450,156 @@ class ChannelContentPager extends ContentPager {
 	}
 }
 
+source.searchChannelContents = function (url, query, type, order, filters) {
+	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
+	state.channelCache[url] = channel;
+	return new SearchChannelContentPager(channel.id.value, channel, query);
+};
+
+source.getChannelPlaylists = function (url) {
+	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
+	state.channelCache[url] = channel;
+
+	const campaignId = channel?.id?.value;
+	const vanity = getVanityFromChannel(channel);
+	if (!campaignId || !vanity) {
+		return new PlaylistPager([], false);
+	}
+
+	try {
+		const data = httpGET({
+			url: BASE_URL_API + "/campaigns/" + campaignId + "?" + buildQuery({ "include": "collections" }),
+			useAuthenticated: true,
+			parseResponse: true
+		});
+
+		const author = new PlatformAuthorLink(
+			new PlatformID(config.name, campaignId, config.id, PLATFORM_CLAIMTYPE),
+			channel.name, 
+			channel.url, 
+			channel.thumbnail, 
+			channel.subscribers || 0
+		);
+
+		const collections = (data?.included ?? []).filter(i => i.type === "collection");
+		if (collections.length === 0) {
+			return new PlaylistPager([], false);
+		}
+
+		// Default (cheap) path: no extra requests. List all collections with unknown count and
+		// without hiding empty/non-media ones. Enable "Load extra playlist info" for accurate data.
+		if (!isSettingEnabled(_settings?.playlistFetchExtraInfo)) {
+			return new PlaylistPager(
+				collections.map(c => collectionToPlatformPlaylist(c, vanity, author, -1)),
+				false);
+		}
+
+		// Probe each collection's playable-media count in one parallel batch (page[size]=1 ->
+		// meta.pagination.total). Lets us set an accurate videoCount and drop collections that
+		// contain no playable media (e.g. polls/links), which would otherwise be empty playlists.
+		const batch = http.batch();
+		collections.forEach(c => batch.GET(collectionMediaPostsUrl(campaignId, c.id, 1), PATREON_REQUEST_MODIFIER.headers, true));
+		const resps = batch.execute();
+
+		const playlists = [];
+		collections.forEach((c, i) => {
+			let total = -1; // unknown -> keep the collection (fail-open)
+			try {
+				const r = resps[i];
+				if (r && r.isOk) total = JSON.parse(r.body)?.meta?.pagination?.total ?? -1;
+			} catch (e) { /* keep as unknown */ }
+
+			if (total === 0) return; // no playable media -> hide
+			playlists.push(collectionToPlatformPlaylist(c, vanity, author, total));
+		});
+
+		return new PlaylistPager(playlists, false);
+	} catch (error) {
+		log("Failed to get channel playlists: " + error.message);
+		return new PlaylistPager([], false);
+	}
+};
+
+source.isPlaylistUrl = function (url) {
+	return REGEX_COLLECTION_URL.test(url);
+};
+
+source.getPlaylist = function (url) {
+	const match = REGEX_COLLECTION_URL.exec(url);
+	if (!match) {
+		throw new ScriptException("Invalid collection url");
+	}
+	const vanity = match[1];
+	const collectionId = match[2];
+
+	const channelUrl = BASE_URL + "/" + vanity;
+	const channel = (state.channelCache[channelUrl]) ? state.channelCache[channelUrl] : source.getChannel(channelUrl);
+	state.channelCache[channelUrl] = channel;
+	const campaignId = channel?.id?.value;
+
+	const data = httpGET({
+		url: BASE_URL_API + "/campaigns/" + campaignId + "?" + buildQuery({ "include": "collections" }),
+		useAuthenticated: true,
+		parseResponse: true
+	});
+	const col = (data?.included ?? []).find(i => i.type === "collection" && i.id === collectionId);
+	if (!col) {
+		throw new UnavailableException("Collection not found");
+	}
+
+	const author = new PlatformAuthorLink(
+		new PlatformID(config.name, campaignId, config.id, PLATFORM_CLAIMTYPE),
+		channel.name, 
+		channel.url, 
+		channel.thumbnail, 
+		channel.subscribers || 0
+	);
+
+	const context = { name: channel.name, url: channel.url, thumbnail: channel.thumbnail, subscribers: channel.subscribers || 0 };
+
+	const contents = new CollectionVideoPager(campaignId, collectionId, context);
+	const base = collectionToPlatformPlaylist(col, vanity, author, contents.total);
+
+	return new PlatformPlaylistDetails({
+		id: base.id,
+		name: base.name,
+		author: base.author,
+		url: base.url,
+		thumbnail: base.thumbnail,
+		videoCount: base.videoCount,
+		datetime: base.datetime,
+		contents: contents
+	});
+};
+
+class CollectionVideoPager extends VideoPager {
+	constructor(campaignId, collectionId, context) {
+		const initialResults = getPosts(campaignId, context, undefined, collectionId);
+		super(initialResults.results.filter(onlyMedia), !!initialResults.nextPage);
+		this.nextPageUrl = initialResults.nextPage;
+		this.campaignId = campaignId;
+		this.collectionId = collectionId;
+		this.context = context;
+		this.total = (typeof initialResults.total === "number") ? initialResults.total : -1;
+	}
+	nextPage() {
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
+		const newResults = getPosts(this.campaignId, this.context, this.nextPageUrl, this.collectionId) ?? { results: [] };
+		this.results = (newResults.results ?? []).filter(onlyMedia);
+		this.nextPageUrl = newResults.nextPage;
+		this.hasMore = !!newResults.nextPage;
+		return this;
+	}
+}
+
+// Playlist contents must be PlatformVideo (the app reads Duration on each item); keep only video/audio posts.
+function onlyMedia(content) {
+	return content != null && content.contentType === CONTENT_TYPE_MEDIA;
+}
+
 source.getChannelTemplateByClaimMap = () => {
 	return {
 		//Patreon
@@ -413,6 +611,7 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
+	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs are playlists, not content
 	return REGEX_URL_ID.test(url);
 };
 
@@ -448,16 +647,17 @@ source.getComments = function (url, page = 0) {
 	
 	try {
 		const commentsData = httpGET({
-			url: "https://www.patreon.com/api/posts/" + id + "/comments" +
-				"?include=include_replies%2Ccommenter%2Creplies%2Creplies.commenter" +
-				"&fields[comment]=body%2Ccreated%2Cvote_sum%2Creply_count" +
-				"&fields[post]=comment_count" +
-				"&fields[user]=image_url%2Cfull_name%2Curl" +
-				"&fields[flair]=image_tiny_url%2Cname" +
-				"&page[count]=10" +
-				"&sort=-created" +
-				"&json-api-use-default-includes=false" +
-				"&json-api-version=1.0",
+			url: BASE_URL_API + "/posts/" + id + "/comments?" + buildQuery({
+				"include": "include_replies,commenter,replies,replies.commenter",
+				"fields[comment]": "body,created,vote_sum,reply_count",
+				"fields[post]": "comment_count",
+				"fields[user]": "image_url,full_name,url",
+				"fields[flair]": "image_tiny_url,name",
+				"page[count]": 10,
+				"sort": "-created",
+				"json-api-use-default-includes": "false",
+				"json-api-version": "1.0"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -577,7 +777,7 @@ class PatreonCommentPager extends CommentPager {
 source.getUserSubscriptions = function () {
 	try {
 		const response = httpGET({
-			url: URL_USER + "?include=active_memberships.campaign",
+			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign" }),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -592,16 +792,24 @@ source.getUserSubscriptions = function () {
 	}
 }
 
-function getPosts(campaign, context, nextPage) {
+function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 	try {
 		const data = httpGET({
-			url: (!nextPage) ? BASE_URL_API + "/posts" +
-				"?filter[campaign_id]=" + campaign +
-				"&include=images,media" +
-				"&filter[contains_exclusive_posts]=true" +
-				"&sort=-published_at" +
-				"&fields[post]=title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail" +
-				"&fields[media]=id,image_urls,display,download_url,metadata,file_name,state" : nextPage,
+			// nextPage is a verbatim links.next cursor URL — never rebuild it.
+			url: nextPage ? nextPage : BASE_URL_API + "/posts?" + buildQuery({
+				"filter[campaign_id]": campaign,
+				// Collections only list playable media (filter[media_types], server-side) and
+				// collection_order preserves the creator's intended order.
+				"filter[collection_id]": collectionId,
+				"filter[media_types]": collectionId ? "video,audio" : undefined,
+				// Channel content search (server-side, scoped to the campaign).
+				"filter[search_query]": searchQuery,
+				"include": "images,media",
+				"filter[contains_exclusive_posts]": "true",
+				"sort": collectionId ? getPlaylistSort() : "-published_at",
+				"fields[post]": "title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail",
+				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -616,7 +824,8 @@ function getPosts(campaign, context, nextPage) {
 
 		return {
 			results: contents,
-			nextPage: data?.links?.next
+			nextPage: data?.links?.next,
+			total: data?.meta?.pagination?.total
 		};
 	} catch (error) {
 		log("Failed to get posts: " + error.message);
@@ -628,10 +837,12 @@ function getPosts(campaign, context, nextPage) {
 	}
 }
 
-const SOCIAL_LINKS_QUERY = "&include=connected_socials,creator" +
-	"&fields[connected_socials]=app_name,external_profile_url,is_public" +
-	"&fields[user]=youtube,twitter,twitch,facebook" +
-	"&json-api-use-default-includes=false";
+const SOCIAL_LINKS_QUERY = buildQuery({
+	"include": "connected_socials,creator",
+	"fields[connected_socials]": "app_name,external_profile_url,is_public",
+	"fields[user]": "youtube,twitter,twitch,facebook",
+	"json-api-use-default-includes": "false"
+});
 
 const SOCIAL_APP_NAME_MAP = {
 	"youtube": "YouTube",
@@ -720,10 +931,12 @@ function parseSinglePost(item, data, context, isDetails=false) {
 function searchChannels(query, page) {
 	try {
 		const data = httpGET({
-			url: URL_SEARCH_CREATORS +
-				"?q=" + query +
-				"&page[number]=" + page +
-				"&json-api-version=1.0&includes=[]",
+			url: URL_SEARCH_CREATORS + "?" + buildQuery({
+				"q": query,
+				"page[number]": page,
+				"json-api-version": "1.0",
+				"includes": "[]"
+			}),
 			useAuthenticated: false,
 			parseResponse: true
 		});
@@ -748,18 +961,21 @@ function searchChannels(query, page) {
 function searchPosts(query, cursor) {
 	try {
 		const data = httpGET({
-			url: URL_SEARCH_POSTS +
-				"?sort=relevance" +
-				"&filter[query]=" + encodeURIComponent(query) +
-				"&filter[is_for_preview]=false" +
-				"&filter[filter_by_user_subscription]=false" +
-				"&filter[include_nsfw]=true" +
-				"&fields[campaign]=name%2Curl%2Cpatron_count%2Cavatar_photo_url%2Cavatar_photo_image_urls" +
-				"&fields[post]=comment_count%2Ccontent%2Ccontent_json_string%2Ccontent_teaser_text%2Ccreated_at%2Ccurrent_user_can_view%2Cembed%2Cimage%2Clike_count%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpost_type%2Cteaser_text%2Cthumbnail%2Cthumbnail_url%2Ctitle%2Curl%2Cvideo%2Cvideo_preview" +
-				"&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate" +
-				"&include=card_post%2Ccard_post.post%2Ccard_post.post.campaign%2Ccard_post.post.images%2Ccard_post.post.media" +
-				"&page[size]=20&page[cursor]=" + encodeURIComponent(cursor || "") +
-				"&json-api-version=1.0&json-api-use-default-includes=false",
+			url: URL_SEARCH_POSTS + "?" + buildQuery({
+				"sort": "relevance",
+				"filter[query]": query,
+				"filter[is_for_preview]": "false",
+				"filter[filter_by_user_subscription]": "false",
+				"filter[include_nsfw]": "true",
+				"fields[campaign]": "name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
+				"fields[post]": "comment_count,content,content_json_string,content_teaser_text,created_at,current_user_can_view,embed,image,like_count,post_file,post_metadata,published_at,post_type,teaser_text,thumbnail,thumbnail_url,title,url,video,video_preview",
+				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media",
+				"page[size]": 20,
+				"page[cursor]": cursor || "",
+				"json-api-version": "1.0",
+				"json-api-use-default-includes": "false"
+			}),
 			useAuthenticated: true,
 			parseResponse: true
 		});
@@ -814,38 +1030,23 @@ function getPostIdFromUrl(url) {
 
 // Function to get home content from launcher/cards API
 function getHomeContent(url) {
-	const requestUrl = url || (URL_LAUNCHER_CARDS + 
-		"?include=campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null," +
-		"latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null," +
-		"latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity," +
-		"latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity," +
-		"latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null," +
-		"latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post," +
-		"latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null," +
-		"latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice," +
-		"latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows," +
-		"latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null," +
-		"latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null," +
-		"latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media," +
-		"upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null%5E" +
-		"&fields%5Bcampaign%5D=id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency," +
-		"current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count," +
-		"pledge_url,primary_theme_color,summary,is_monthly%5E" +
-		"&fields%5Bcomment%5D=body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state" +
-		"&fields%5Bcontent-unlock-option%5D=content_unlock_type,reward_benefit_categories" +
-		"&fields%5Bdisplay-identity%5D=name,link_url" +
-		"&fields%5Bpost%5D=id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment," +
-		"current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason," +
-		"embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type," +
-		"post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview" +
-		"&fields%5Bproduct-variant%5D=name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url" +
-		"&fields%5Bdrop%5D=created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count" +
-		"&fields%5Bmedia%5D=id,image_urls,display,download_url,metadata,file_name,state" +
-		"&fields%5Blivestream%5D=state,display" +
-		"&filter%5Bshow_shop_posts%5D=false" +
-		"&json-api-version=1.0" +
-		"&json-api-use-default-includes=false" +
-		"&page%5Bcount%5D=10");
+	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
+	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
+		"include": "campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null,latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null,latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity,latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity,latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null,latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post,latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null,latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice,latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows,latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null,latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null,latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media,upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null",
+		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
+		"fields[comment]": "body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state",
+		"fields[content-unlock-option]": "content_unlock_type,reward_benefit_categories",
+		"fields[display-identity]": "name,link_url",
+		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
+		"fields[product-variant]": "name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url",
+		"fields[drop]": "created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count",
+		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+		"fields[livestream]": "state,display",
+		"filter[show_shop_posts]": "false",
+		"json-api-version": "1.0",
+		"json-api-use-default-includes": "false",
+		"page[count]": 10
+	}));
 	
 	try {
 		const data = httpGET({
@@ -854,7 +1055,7 @@ function getHomeContent(url) {
 			parseResponse: true
 		});
 	const contents = [];
-	
+
 	// Build lookup maps for efficient access
 	const includedMap = createIncludedLookupMap(data.included);
 	
@@ -898,6 +1099,7 @@ function getHomeContent(url) {
 			nextPageUrl: data.links?.next || null
 		};
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		console.log("Failed to get home content: " + error.message);
 		return { results: [], hasMore: false, nextPageUrl: null };
 	}
@@ -1117,7 +1319,29 @@ source.getContentRecommendations = function (url) {
 			subscribers: campaign.attributes?.patron_count || 0
 		};
 
-		const requestUrl = `https://www.patreon.com/api/related_posts/${campaign.id}/${postId}?include=campaign%2Caccess_rules%2Caccess_rules.tier.null%2Cattachments_media%2Caudio%2Caudio_preview.null%2Ccustom_thumbnail_media.null%2Cdrop%2Cimages%2Cmedia%2Cnative_video_insights%2Cpoll.choices%2Cpoll.current_user_responses.user%2Cpoll.current_user_responses.choice%2Cpoll.current_user_responses.poll%2Cshows.null%2Cuser%2Cuser_defined_tags%2Cvideo.null%2Ccontent_unlock_options.product_variant.null%2Ccontent_unlock_options.reward.null%2Ccontent_unlock_options.product_variant.collection.null%2Clivestream%2Clivestream.state%2Clivestream.display%2Crss_synced_feed%2Cpost_new_comment_identity%2Cpost_new_comment_identity.avatar%2Cpost_new_comment_identity.community_profile%2Cpost_new_comment_identity.identity_badges&fields[campaign]=currency%2Cshow_audio_post_download_links%2Cavatar_photo_url%2Cavatar_photo_image_urls%2Cearnings_visibility%2Cis_nsfw%2Cis_monthly%2Cname%2Curl%2Cpatron_count%2Cprimary_theme_color&fields[post]=attachments_preview_metadata%2Cchange_visibility_at%2Ccomment_count%2Ccommenter_count%2Ccontent%2Ccontent_json_string%2Ccreated_at%2Ccurrent_user_can_comment%2Ccurrent_user_can_delete%2Ccurrent_user_can_report%2Ccurrent_user_can_view%2Ccurrent_user_comment_disallowed_reason%2Ccurrent_user_has_liked%2Cembed%2Cimage%2Cinsights_last_updated_at%2Cis_paid%2Cis_preview_blurred%2Chas_custom_thumbnail%2Clike_count%2Cmeta_image_url%2Cmin_cents_pledged_to_view%2Cmonetization_ineligibility_reason%2Cpost_file%2Cpost_metadata%2Cpublished_at%2Cpatreon_url%2Cpost_type%2Cpledge_url%2Cpreview_asset_type%2Cthumbnail%2Cthumbnail_url%2Cteaser_text%2Cteaser_text_json_string%2Ccontent_teaser_text%2Ccleaned_teaser_text%2Ctitle%2Cupgrade_url%2Curl%2Cwas_posted_by_campaign_owner%2Chas_ti_violation%2Cmoderation_status%2Cpost_level_suspension_removal_date%2Cpls_one_liners_by_category%2Cvideo%2Cvideo_preview%2Cview_count%2Ccontent_unlock_options%2Cis_new_to_current_user%2Cwatch_state&fields[post_tag]=tag_type%2Cvalue&fields[user]=image_url%2Cfull_name%2Curl&fields[access_rule]=access_rule_type%2Camount_cents&fields[livestream]=display%2Cstate&fields[media]=id%2Cimage_urls%2Cdisplay%2Cdownload_url%2Cmetadata%2Cfile_name%2Cstate&fields[native_video_insights]=average_view_duration%2Caverage_view_pct%2Chas_preview%2Cid%2Clast_updated_at%2Cnum_views%2Cpreview_views%2Cvideo_duration&fields[content-unlock-option]=content_unlock_type%2Cis_current_user_eligible%2Creward_benefit_categories&fields[product-variant]=price_cents%2Ccurrency_code%2Ccheckout_url%2Cis_hidden%2Cpublished_at_datetime%2Ccontent_type%2Corders_count%2Caccess_metadata%2Clive_sale_discounted_price_cents%2Clive_sale_discounted_price_info&fields[shows]=id%2Ctitle%2Cdescription%2Cthumbnail&fields[display-identity]=name%2Clink_url&fields[primary-image]=image_icon&fields[identity-badge]=badge_type&page[cursor]=null&page[count]=5&filter[is_by_creator]=true&filter[contains_exclusive_posts]=true&json-api-use-default-includes=false&json-api-version=1.0`;
+		const requestUrl = BASE_URL_API + "/related_posts/" + campaign.id + "/" + postId + "?" + buildQuery({
+			"include": "campaign,access_rules,access_rules.tier.null,attachments_media,audio,audio_preview.null,custom_thumbnail_media.null,drop,images,media,native_video_insights,poll.choices,poll.current_user_responses.user,poll.current_user_responses.choice,poll.current_user_responses.poll,shows.null,user,user_defined_tags,video.null,content_unlock_options.product_variant.null,content_unlock_options.reward.null,content_unlock_options.product_variant.collection.null,livestream,livestream.state,livestream.display,rss_synced_feed,post_new_comment_identity,post_new_comment_identity.avatar,post_new_comment_identity.community_profile,post_new_comment_identity.identity_badges",
+			"fields[campaign]": "currency,show_audio_post_download_links,avatar_photo_url,avatar_photo_image_urls,earnings_visibility,is_nsfw,is_monthly,name,url,patron_count,primary_theme_color",
+			"fields[post]": "attachments_preview_metadata,change_visibility_at,comment_count,commenter_count,content,content_json_string,created_at,current_user_can_comment,current_user_can_delete,current_user_can_report,current_user_can_view,current_user_comment_disallowed_reason,current_user_has_liked,embed,image,insights_last_updated_at,is_paid,is_preview_blurred,has_custom_thumbnail,like_count,meta_image_url,min_cents_pledged_to_view,monetization_ineligibility_reason,post_file,post_metadata,published_at,patreon_url,post_type,pledge_url,preview_asset_type,thumbnail,thumbnail_url,teaser_text,teaser_text_json_string,content_teaser_text,cleaned_teaser_text,title,upgrade_url,url,was_posted_by_campaign_owner,has_ti_violation,moderation_status,post_level_suspension_removal_date,pls_one_liners_by_category,video,video_preview,view_count,content_unlock_options,is_new_to_current_user,watch_state",
+			"fields[post_tag]": "tag_type,value",
+			"fields[user]": "image_url,full_name,url",
+			"fields[access_rule]": "access_rule_type,amount_cents",
+			"fields[livestream]": "display,state",
+			"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
+			"fields[native_video_insights]": "average_view_duration,average_view_pct,has_preview,id,last_updated_at,num_views,preview_views,video_duration",
+			"fields[content-unlock-option]": "content_unlock_type,is_current_user_eligible,reward_benefit_categories",
+			"fields[product-variant]": "price_cents,currency_code,checkout_url,is_hidden,published_at_datetime,content_type,orders_count,access_metadata,live_sale_discounted_price_cents,live_sale_discounted_price_info",
+			"fields[shows]": "id,title,description,thumbnail",
+			"fields[display-identity]": "name,link_url",
+			"fields[primary-image]": "image_icon",
+			"fields[identity-badge]": "badge_type",
+			"page[cursor]": "null",
+			"page[count]": 5,
+			"filter[is_by_creator]": "true",
+			"filter[contains_exclusive_posts]": "true",
+			"json-api-use-default-includes": "false",
+			"json-api-version": "1.0"
+		});
 		
 		const data = httpGET({
 			url: requestUrl,
@@ -1422,6 +1646,27 @@ function throwIfCaptcha(resp) {
 
 
 /**
+ * Builds a query string (without leading "?") from a params object.
+ * Encodes values only (keys stay literal, so Patreon's bracketed keys like filter[campaign_id],
+ * fields[post], page[cursor] are preserved). Array values become repeated keys (key=a&key=b).
+ * undefined/null params are skipped (use for conditional params); "" and 0 are kept.
+ */
+function buildQuery(params) {
+	const parts = [];
+	for (const key in params) {
+		const v = params[key];
+		if (v === undefined || v === null) continue;
+		if (Array.isArray(v)) {
+			for (const item of v)
+				if (item !== undefined && item !== null) parts.push(key + "=" + encodeURIComponent(item));
+		} else {
+			parts.push(key + "=" + encodeURIComponent(v));
+		}
+	}
+	return parts.join("&");
+}
+
+/**
  * Gets the requested url and returns the response body either as a string or as a parsed json object
  * @param {Object} options - The options object
  * @param {string} options.url - The URL to call
@@ -1464,5 +1709,85 @@ function httpGET(options) {
 
     return resp.body;
 }
+
+
+// Extracts the vanity slug from a resolved channel's url (channel.url == https://www.patreon.com/{vanity})
+function getVanityFromChannel(channel) {
+	const m = (channel?.url || "").match(/patreon\.com\/([^\/?#]+)/);
+	return m ? m[1] : null;
+}
+
+// Extracts the creator vanity from a channel URL for API resolution. Handles bare (/vanity) and
+// prefixed (/c/vanity, /cw/vanity) forms. Returns null for reserved paths that aren't creator
+// vanities (posts, profile, api, etc.) so those fall back to other handling.
+const RESERVED_VANITY_SEGMENTS = new Set(["posts", "post", "profile", "api", "login", "search", "home", "messages", "settings", "user"]);
+function getVanityFromUrl(url) {
+	const m = (url || "").match(/patreon\.com\/(?:(?:c|cw)\/)?([^\/?#]+)/i);
+	if (!m) return null;
+	const vanity = m[1];
+	return RESERVED_VANITY_SEGMENTS.has(vanity.toLowerCase()) ? null : vanity;
+}
+
+// Boolean settings arrive as real booleans from the app; coerce defensively (string "true" in tests).
+function isSettingEnabled(v) {
+	return v === true || v === "true";
+}
+
+// Resolves the configured playlist sort param from the "playlistSortOrderIndex" Dropdown setting.
+function getPlaylistSort() {
+	return PLAYLIST_SORTS[parseInt(_settings?.playlistSortOrderIndex ?? 0)] || PLAYLIST_SORTS[0];
+}
+
+// videoCount: count of playable media in the collection (from filter[media_types]=video,audio,
+// meta.pagination.total). Pass -1 when unknown. Patreon's num_posts counts ALL post types
+// (polls/images/text), so it can't be used here.
+function collectionToPlatformPlaylist(col, vanity, author, videoCount) {
+	const a = col.attributes || {};
+	return new PlatformPlaylist({
+		id: new PlatformID(config.name, col.id, config.id, PLATFORM_CLAIMTYPE),
+		name: a.title || "Collection",
+		author: author,
+		url: BASE_URL + "/cw/" + vanity + "/collections?collection_id=" + col.id,
+		thumbnail: a.thumbnail?.thumbnail_large || a.thumbnail?.original || a.thumbnail?.thumbnail || null,
+		videoCount: (typeof videoCount === "number") ? videoCount : -1,
+		datetime: a.created_at ? Math.floor(Date.parse(a.created_at) / 1000) : 0
+	});
+}
+
+// URL that returns only the playable-media posts of a collection (cheap count probe with page[size]=1).
+function collectionMediaPostsUrl(campaignId, collectionId, pageSize) {
+	return BASE_URL_API + "/posts?" + buildQuery({
+		"filter[campaign_id]": campaignId,
+		"filter[collection_id]": collectionId,
+		"filter[media_types]": "video,audio",
+		"filter[contains_exclusive_posts]": "true",
+		"sort": "collection_order",
+		"fields[post]": "post_type",
+		"page[size]": pageSize
+	});
+}
+
+class SearchChannelContentPager extends ContentPager {
+	constructor(campaignId, channel, query) {
+		const initialResults = getPosts(campaignId, channel, undefined, undefined, query);
+		super(initialResults.results, !!initialResults.nextPage);
+		this.nextPageUrl = initialResults.nextPage;
+		this.campaignId = campaignId;
+		this.channel = channel;
+		this.query = query;
+	}
+	nextPage() {
+		if (!this.nextPageUrl) {
+			this.hasMore = false;
+			return this;
+		}
+		const newResults = getPosts(this.campaignId, this.channel, this.nextPageUrl, undefined, this.query) ?? { results: [] };
+		this.results = newResults.results;
+		this.nextPageUrl = newResults.nextPage;
+		this.hasMore = !!newResults.nextPage;
+		return this;
+	}
+}
+
 
 log("LOADED");
