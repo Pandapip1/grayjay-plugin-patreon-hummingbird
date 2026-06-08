@@ -308,9 +308,63 @@ function getChannelFromUserId(userId, originalUrl) {
 	throw new ScriptException("Failed to get channel from user ID: " + userId);
 }
 source.getChannel = function (url) {
+	if (state.channelCache[url]) return state.channelCache[url];
+
+	// Profile URLs (patreon.com/profile/creators?u=ID) resolve via the user API.
+	const profileMatch = REGEX_PROFILE_URL.exec(url);
+	if (profileMatch) {
+		const userId = profileMatch[1];
+		const profileChannel = getChannelFromUserId(userId, url);
+		profileChannel.urlAlternatives = Array.from(new Set([url, `https://www.patreon.com/profile/creators?u=${userId}`]));
+		state.channelCache[url] = profileChannel;
+		return profileChannel;
+	}
+
+	// Vanity URLs resolve the campaign through the API. The HTML creator page sits behind a
+	// Cloudflare challenge that raw http.GET have issues, so the API is the primary path.
+	const vanity = getVanityFromUrl(url);
+	if (vanity) {
+		try {
+			const channel = getChannelFromVanity(vanity);
+			if (channel) {
+				channel.urlAlternatives = Array.from(new Set([url, channel.url]));
+				state.channelCache[url] = channel;
+				return channel;
+			}
+		} catch (error) {
+			if (error instanceof CaptchaRequiredException) throw error;
+			if (error.code === 404) throw new UnavailableException("Channel not found");
+			// Any other error: fall through to the legacy HTML scraper below.
+		}
+	}
+
+	// Fallback: legacy HTML scraping (reachable only when the API resolver finds no campaign).
+	return getChannelFromHtml(url);
+};
+
+// Resolves a creator's campaign directly from the API by vanity slug, avoiding the
+// Cloudflare-challenged HTML page. Returns null when no campaign matches the vanity.
+function getChannelFromVanity(vanity) {
+	const data = httpGET({
+		url: BASE_URL_API + "/campaigns?" + buildQuery({
+			"filter[vanity]": vanity,
+			"json-api-version": "1.0"
+		}) + "&" + SOCIAL_LINKS_QUERY,
+		useAuthenticated: true,
+		parseResponse: true
+	});
+	const campaign = data?.data?.[0];
+	if (!campaign) return null;
+	const channel = { campaign: { data: { id: campaign.id, attributes: campaign.attributes } } };
+	return campaignToPlatformChannel(channel, extractSocialLinks(data.included));
+}
+
+// Legacy fallback: scrape the creator's HTML page and parse the bootstrap blob. Only used when
+// the API vanity resolver returns nothing; the HTML page is usually behind a Cloudflare challenge.
+function getChannelFromHtml(url) {
 	let channelResp;
 	let finalUrl;
-	
+
 	try {
 		const response = httpGET({
 			url: url,
@@ -326,17 +380,6 @@ source.getChannel = function (url) {
 	}
 
 	const urlSet = new Set([url, finalUrl]);
-	
-	// Check if this is a profile URL (with or without /creators)
-	const profileMatch = REGEX_PROFILE_URL.exec(finalUrl);
-	if (profileMatch) {
-		const userId = profileMatch[1];
-		const profileChannel = getChannelFromUserId(userId, finalUrl);
-		urlSet.add(`https://www.patreon.com/profile/creators?u=${userId}`);
-		profileChannel.urlAlternatives = Array.from(urlSet);
-		state.channelCache[url] = profileChannel;
-		return profileChannel;
-	}
 
 	let channelJson = REGEX_CHANNEL_DETAILS.exec(channelResp.body);
 	let channel = null;
@@ -1672,6 +1715,17 @@ function httpGET(options) {
 function getVanityFromChannel(channel) {
 	const m = (channel?.url || "").match(/patreon\.com\/([^\/?#]+)/);
 	return m ? m[1] : null;
+}
+
+// Extracts the creator vanity from a channel URL for API resolution. Handles bare (/vanity) and
+// prefixed (/c/vanity, /cw/vanity) forms. Returns null for reserved paths that aren't creator
+// vanities (posts, profile, api, etc.) so those fall back to other handling.
+const RESERVED_VANITY_SEGMENTS = new Set(["posts", "post", "profile", "api", "login", "search", "home", "messages", "settings", "user"]);
+function getVanityFromUrl(url) {
+	const m = (url || "").match(/patreon\.com\/(?:(?:c|cw)\/)?([^\/?#]+)/i);
+	if (!m) return null;
+	const vanity = m[1];
+	return RESERVED_VANITY_SEGMENTS.has(vanity.toLowerCase()) ? null : vanity;
 }
 
 // Boolean settings arrive as real booleans from the app; coerce defensively (string "true" in tests).
