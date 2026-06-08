@@ -7,7 +7,7 @@
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
 	"scriptUrl": "./PatreonScript.js",
-	"version": 28,
+	"version": 29,
 	
 	"iconUrl": "./patreon_logo.png",
 	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
@@ -22,6 +22,12 @@
 		"patreon.com"
 	],
 	"changelog": {
+		"29": [
+			"Fix: Home failing in some circumstances under VPNs;",
+			"Fix: Channel and channel content failing to load under VPNs;",
+			"Improvement: search within a creator's content",
+			"Improvement: expose creator collections as channel playlists;"
+		],
 		"28": [
 			"Fix: Audio-only posts (podcasts) not playing due to missing media container type;",
 			"Fix: Comment replies;"
