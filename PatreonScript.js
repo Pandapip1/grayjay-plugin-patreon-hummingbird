@@ -515,6 +515,7 @@ source.getChannelPlaylists = function (url) {
 
 		return new PlaylistPager(playlists, false);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		log("Failed to get channel playlists: " + error.message);
 		return new PlaylistPager([], false);
 	}
@@ -645,6 +646,7 @@ source.getContentDetails = function (url) {
         const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
         return parseSinglePost(postBody.data, postBody, channel, true);
     } catch (error) {
+        if (error instanceof CaptchaRequiredException) throw error;
         if (error instanceof UnavailableException) throw error;
         throw new ScriptException("Failed to get post details");
     }
@@ -675,6 +677,7 @@ source.getComments = function (url, page = 0) {
 		});
 		return new PatreonCommentPager(url, commentsData);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to get comments");
 	}
 }
@@ -738,6 +741,7 @@ class PatreonCommentPager extends CommentPager {
 			
 			return this;
 		} catch (error) {
+			if (error instanceof CaptchaRequiredException) throw error;
 			throw new ScriptException("Failed to get next comment page");
 		}
 	}
@@ -801,6 +805,7 @@ source.getUserSubscriptions = function () {
 			return channel_url
 		});
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to get subscriptions");
 	}
 }
@@ -841,6 +846,7 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 			total: data?.meta?.pagination?.total
 		};
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		log("Failed to get posts: " + error.message);
 		return {
 			results: [],
@@ -967,6 +973,7 @@ function searchChannels(query, page) {
 
 		return channels.filter(x => x != null);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to search creators");
 	}
 }
@@ -1030,6 +1037,7 @@ function searchPosts(query, cursor) {
 			hasMore: !!nextCursor
 		};
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		log("Failed to search posts: " + error.message);
 		return { results: [], cursor: null, hasMore: false };
 	}
@@ -1379,6 +1387,7 @@ source.getContentRecommendations = function (url) {
 
 		return new ContentPager(content, false);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		return new ContentPager([], false);
 	}
 };
