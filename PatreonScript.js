@@ -614,8 +614,12 @@ source.isContentDetailsUrl = function (url) {
 
 	if (!url) return false;
 
-	// Check for URL hint
-	if (hasQueryParam(url, 'isPatreonContent')) {
+	// Android can't open post/text/image details, so only the media hint is valid there;
+	// desktop routes all detail types through isContentDetailsUrl/getContentDetails.
+	if (
+		hasQueryParam(url, 'isPatreonMediaContent') ||
+		(IS_DESKTOP && hasQueryParam(url, 'isPatreonPostContent'))
+	) {
 		return true;
 	}
 
@@ -1373,7 +1377,7 @@ function mapToVideoContent(post, context) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
-	const contentUrl = addContentUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id));
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonMediaContent');
 
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
@@ -1396,7 +1400,7 @@ function mapToAudioContent(post, context) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
-	const contentUrl = addContentUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id));
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonMediaContent');
 
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
@@ -1437,12 +1441,14 @@ function mapToTextContent(post, context) {
 			: text;
 	}
 
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Text Post",
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
@@ -1513,12 +1519,14 @@ function mapToImageContent(post, context, includedLookup) {
 
 	const imageUrls = images.map(img => img.attributes.image_urls.original);
 
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Image Post",
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
@@ -1802,16 +1810,6 @@ class SearchChannelContentPager extends ContentPager {
 	}
 }
 
-
-/**
- * Adds content URL hint to a Patreon video URL
- * @param {string} url - The video URL
- * @returns {string} - The URL with content hint parameter
- */
-
-function addContentUrlHint(url) {
-    return addUrlHint(url, 'isPatreonContent');
-}
 
 /**
  * Adds a URL hint parameter to a URL if it doesn't already have one
