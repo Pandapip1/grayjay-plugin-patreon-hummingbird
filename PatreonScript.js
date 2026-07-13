@@ -1557,14 +1557,16 @@ function mapToImageContent(post, context, includedLookup) {
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
-	// Quality ladder for the representative (first) image at ascending sizes (px width; original = max).
-	const firstImageUrls = images?.[0]?.attributes?.image_urls ?? {};
-	
-	const thumbnails = new Thumbnails([
-		new Thumbnail(firstImageUrls.thumbnail, 360),
-		new Thumbnail(firstImageUrls.default_large, 1080),
-		new Thumbnail(firstImageUrls.original, 9999)
+	// Post thumbnails is a list (one Thumbnails per image); article is a single representative
+	// image. Each Thumbnails is an ascending-size ladder (px width; original = max).
+	const imageToThumbnails = (img) => {
+		const iu = img?.attributes?.image_urls ?? {};
+		return new Thumbnails([
+			new Thumbnail(iu.thumbnail, 360),
+			new Thumbnail(iu.default_large, 1080),
+			new Thumbnail(iu.original, 9999)
 	].filter(t => t.url));
+	};
 
 	if (ARTICLES_ENABLED) {
 		const segments = [new ArticleImagesSegment(imageUrls, "")];
@@ -1579,7 +1581,7 @@ function mapToImageContent(post, context, includedLookup) {
 		const article = new PlatformArticleDetails({
 			...base,
 			summary: description,
-			thumbnails,
+			thumbnails: imageToThumbnails(images[0]),
 			segments
 		});
 		article.getContentRecommendations = function () {
@@ -1594,7 +1596,7 @@ function mapToImageContent(post, context, includedLookup) {
 		textType: Type.Text.HTML,
 		content: htmlContent || "",
 		images: imageUrls,
-		thumbnails
+		thumbnails: images.map(imageToThumbnails)
 	});
 }
 
@@ -1632,7 +1634,7 @@ function mapToLockedContent(post, context) {
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		contentName: attrs.embed?.subject,
 		contentThumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.large || attrs.image?.thumb_url, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.image?.url || attrs.meta_image_url, 1)
 		].filter(x => x.url)),
 		lockDescription: "Exclusive for members",
 		unlockUrl: attrs.url || (BASE_URL + "/posts/" + post.id),
