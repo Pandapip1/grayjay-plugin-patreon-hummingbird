@@ -90,9 +90,11 @@ source.enable = function (conf, settings, savedState) {
 		}
 	}
 }
+
 source.saveState = function () {
 	return JSON.stringify(state);
 }
+
 source.getHome = function () {
 
 	if (!bridge.isLoggedIn()) {
@@ -699,7 +701,7 @@ source.getSubComments = function (comment) {
 	const replies = replyData.map(r => new Comment({
 		contextUrl: comment.contextUrl,
 		author: new PlatformAuthorLink(
-			new PlatformID(config.name, r.id, PLATFORM_CLAIMTYPE), 
+			new PlatformID(config.name, r.id, config.id, PLATFORM_CLAIMTYPE),
 			r.authorName, 
 			r.authorUrl, 
 			r.authorImage
@@ -779,7 +781,7 @@ class PatreonCommentPager extends CommentPager {
 
 		return new Comment({
 			contextUrl: this.contextUrl,
-			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
+			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, config.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
 			message: comment.attributes.body ?? "",
 			rating: new RatingLikes(comment.attributes.vote_sum ?? 0),
 			date: toUnixSeconds(comment.attributes.created),
