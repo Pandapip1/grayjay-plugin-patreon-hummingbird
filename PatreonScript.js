@@ -22,7 +22,7 @@ const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?
 const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon.com\/(.+)/s
 const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators)?\?u=(\d+)/s
 
-const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
+const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon\.com\/(?:[^\/]+\/)?posts\/.*-(.*)\/?/s
 
 // Grayjay content type for media (video/audio). Playlist contents must be PlatformVideo only
 // (the app deserializes playlist.contents via JSVideoPager and requires Duration), so collection
