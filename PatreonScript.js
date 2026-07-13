@@ -635,7 +635,12 @@ source.getContentDetails = function (url) {
 
     try {
         const postBody = httpGET({
-            url: `https://www.patreon.com/api/posts/${postId}`,
+            // campaign is needed for the author; images resolves image_file posts (image_order -> media)
+            // so they open on desktop. A bare fetch omits images; specifying include overrides defaults.
+            url: BASE_URL_API + "/posts/" + postId + "?" + buildQuery({
+                "include": "campaign,images",
+                "fields[media]": "id,image_urls,display,download_url,metadata,file_name,state"
+            }),
             useAuthenticated: true,
             parseResponse: true
         });
