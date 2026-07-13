@@ -1552,6 +1552,15 @@ function mapToImageContent(post, context, includedLookup) {
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
+	// Quality ladder for the representative (first) image at ascending sizes (px width; original = max).
+	const firstImageUrls = images?.[0]?.attributes?.image_urls ?? {};
+	
+	const thumbnails = new Thumbnails([
+		new Thumbnail(firstImageUrls.thumbnail, 360),
+		new Thumbnail(firstImageUrls.default_large, 1080),
+		new Thumbnail(firstImageUrls.original, 9999)
+	].filter(t => t.url));
+
 	if (ARTICLES_ENABLED) {
 		const segments = [new ArticleImagesSegment(imageUrls, "")];
 		if (attrs?.content_json_string) {
@@ -1565,9 +1574,7 @@ function mapToImageContent(post, context, includedLookup) {
 		const article = new PlatformArticleDetails({
 			...base,
 			summary: description,
-			thumbnails: new Thumbnails([
-				new Thumbnail(images[0].attributes.image_urls.thumbnail || imageUrls[0], 1)
-			].filter(t => t.url)),
+			thumbnails,
 			segments
 		});
 		article.getContentRecommendations = function () {
@@ -1582,9 +1589,7 @@ function mapToImageContent(post, context, includedLookup) {
 		textType: Type.Text.HTML,
 		content: htmlContent || "",
 		images: imageUrls,
-		thumbnails: images.map(img => img.attributes.image_urls.thumbnail
-			? new Thumbnails([new Thumbnail(img.attributes.image_urls.thumbnail, 1)])
-			: null)
+		thumbnails
 	});
 }
 
