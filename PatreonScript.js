@@ -767,7 +767,7 @@ class PatreonCommentPager extends CommentPager {
 					authorImage: rCommenter.attributes.image_url,
 					message: y.attributes.body ?? "",
 					voteSum: y.attributes.vote_sum ?? 0,
-					date: parseInt(Date.parse(y.attributes.created) / 1000),
+					date: toUnixSeconds(y.attributes.created),
 					replyCount: y.attributes.reply_count ?? 0
 				};
 			})
@@ -778,7 +778,7 @@ class PatreonCommentPager extends CommentPager {
 			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
 			message: comment.attributes.body ?? "",
 			rating: new RatingLikes(comment.attributes.vote_sum ?? 0),
-			date: parseInt(Date.parse(comment.attributes.created) / 1000),
+			date: toUnixSeconds(comment.attributes.created),
 			replyCount: comment.attributes.reply_count ?? 0,
 			// Must be a string: the app deserializes context into a string->string map
 			// (Android Map<String,String> / Desktop Dictionary<string,string>); a non-string value throws at deserialization.
@@ -1038,6 +1038,17 @@ function searchPosts(query, cursor) {
 function getPostIdFromUrl(url) {
 	const match = url.match(/\/posts\/(?:[\w-]+-)?(\d+)/);
     return match ? match[1] : null;
+}
+
+/**
+ * Converts an ISO date string to a Unix timestamp in whole seconds.
+ * @param {string} dateString - e.g. attrs.published_at; may be null/undefined/invalid.
+ * @returns {number} Unix time in seconds, or 0 when missing/unparseable.
+ */
+function toUnixSeconds(dateString) {
+	if (!dateString) return 0;
+	const ms = Date.parse(dateString);
+	return Number.isNaN(ms) ? 0 : Math.floor(ms / 1000);
 }
 
 
@@ -1383,7 +1394,7 @@ function mapToVideoContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
 		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
@@ -1406,7 +1417,7 @@ function mapToAudioContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
 		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
@@ -1447,7 +1458,7 @@ function mapToTextContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Text Post",
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
@@ -1525,7 +1536,7 @@ function mapToImageContent(post, context, includedLookup) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Image Post",
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
@@ -1575,7 +1586,7 @@ function mapToNestedMediaContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		contentUrl: attrs.embed.url,
 		contentName: attrs.embed.subject,
@@ -1596,7 +1607,7 @@ function mapToLockedContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		contentName: attrs.embed?.subject,
 		contentThumbnails: new Thumbnails([
@@ -1771,7 +1782,7 @@ function collectionToPlatformPlaylist(col, vanity, author, videoCount) {
 		url: BASE_URL + "/cw/" + vanity + "/collections?collection_id=" + col.id,
 		thumbnail: a.thumbnail?.thumbnail_large || a.thumbnail?.original || a.thumbnail?.thumbnail || null,
 		videoCount: (typeof videoCount === "number") ? videoCount : -1,
-		datetime: a.created_at ? Math.floor(Date.parse(a.created_at) / 1000) : 0
+		datetime: toUnixSeconds(a.created_at)
 	});
 }
 
