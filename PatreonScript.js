@@ -611,6 +611,14 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
+
+	if (!url) return false;
+
+	// Check for URL hint
+	if (hasQueryParam(url, 'isPatreonContent')) {
+		return true;
+	}
+
 	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs are playlists, not content
 	return REGEX_URL_ID.test(url);
 };
@@ -640,11 +648,11 @@ source.getContentDetails = function (url) {
 
 //Comments
 source.getComments = function (url, page = 0) {
-	const idMatch = REGEX_URL_ID.exec(url) ?? [];
-	if (idMatch.length != 2)
+
+	const id = getPostIdFromUrl(url);
+	if (!id)
 		return new CommentPager([], false);
-	const id = idMatch[1];
-	
+
 	try {
 		const commentsData = httpGET({
 			url: BASE_URL_API + "/posts/" + id + "/comments?" + buildQuery({
@@ -666,6 +674,7 @@ source.getComments = function (url, page = 0) {
 		throw new ScriptException("Failed to get comments");
 	}
 }
+
 source.getSubComments = function (comment) {
 	if (typeof comment === 'string')
 		comment = JSON.parse(comment);
@@ -1364,12 +1373,14 @@ function mapToVideoContent(post, context) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
+	const contentUrl = addContentUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id));
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
 		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
@@ -1385,12 +1396,14 @@ function mapToAudioContent(post, context) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
+	const contentUrl = addContentUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id));
+
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
 		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
 		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
 		rating: new RatingLikes(attrs.like_count || 0),
@@ -1786,6 +1799,64 @@ class SearchChannelContentPager extends ContentPager {
 		this.nextPageUrl = newResults.nextPage;
 		this.hasMore = !!newResults.nextPage;
 		return this;
+	}
+}
+
+
+/**
+ * Adds content URL hint to a Patreon video URL
+ * @param {string} url - The video URL
+ * @returns {string} - The URL with content hint parameter
+ */
+
+function addContentUrlHint(url) {
+    return addUrlHint(url, 'isPatreonContent');
+}
+
+/**
+ * Adds a URL hint parameter to a URL if it doesn't already have one
+ * @param {string} url - The URL to add the hint to
+ * @param {string} hintParam - The hint parameter name (without the value)
+ * @param {string} hintValue - The value for the hint parameter
+ * @returns {string} - The URL with the hint parameter added
+ */
+
+function addUrlHint(url, hintParam, hintValue = '1') {
+    if (!url) {
+        return url;
+    }
+    
+    // Check if hint already exists
+    if (url.includes(`${hintParam}=${hintValue}`)) {
+        return url;
+    }
+    
+    try {
+        const urlObj = new URL(url);
+        urlObj.searchParams.append(hintParam, hintValue);
+        return urlObj.toString();
+    } catch (error) {
+        // If URL parsing fails, return the original false
+        log(`Error adding URL hint to ${url}:`, error);
+        return url;
+    }
+}
+
+/**
+ * 
+ * @param {string} url 
+ * @param {string} queryParamToCheck 
+ * @returns 
+ */
+function hasQueryParam(url, queryParamToCheck) {
+	try {
+		const urlTest = new URL(url);
+		const { host, pathname, searchParams } = urlTest;
+		return searchParams.has(queryParamToCheck);
+	} catch (error) {
+		// If URL parsing fails, return the original URL
+		log(`Error checking URL hint to ${url}:`, error);
+		return false;
 	}
 }
 
