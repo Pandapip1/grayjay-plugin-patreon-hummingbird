@@ -109,6 +109,28 @@
 				"Newest first",
 				"Oldest first"
 			]
+		},
+		{
+			"variable": "advanced",
+			"name": "Advanced",
+			"description": "Settings not intended for most users, but may help with troubleshooting.",
+			"type": "Header"
+		},
+		{
+			"variable": "useRequestRetries",
+			"name": "Request Retries",
+			"description": "Retry failed HTTP requests (rate-limit and server errors) up to 3 times before failing.",
+			"type": "Boolean",
+			"default": "true",
+			"isAdvanced": "true"
+		},
+		{
+			"variable": "verboseNotifications",
+			"name": "Verbose notifications",
+			"description": "Show toast notifications for plugin trace messages and failed requests (useful for debugging).",
+			"type": "Boolean",
+			"default": "false",
+			"isAdvanced": "true"
 		}
 	],
 	

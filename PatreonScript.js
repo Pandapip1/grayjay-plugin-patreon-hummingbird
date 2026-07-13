@@ -16,6 +16,12 @@ const URL_SEARCH_POSTS = BASE_URL_API + "/search_feed/v1/post";
 const URL_USER = BASE_URL_API + "/current_user";
 const URL_LAUNCHER_CARDS = BASE_URL_API + "/launcher/cards";
 
+// Retry policy for transient HTTP failures (429 rate-limit, 5xx server errors).
+const HTTP_MAX_RETRIES = 3;
+const HTTP_RETRY_BASE_DELAY_MS = 1000;
+const HTTP_STATUS_TOO_MANY_REQUESTS = 429;
+const HTTP_STATUS_SERVER_ERROR_MIN = 500;
+
 const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?})\);/s
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
 const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s
@@ -86,7 +92,7 @@ source.enable = function (conf, settings, savedState) {
 				}
 			}
 		} catch (e) {
-			log("Patreon: failed to parse savedState, starting fresh: " + e);
+			trace("Patreon: failed to parse savedState, starting fresh: " + e);
 		}
 	}
 }
@@ -518,7 +524,7 @@ source.getChannelPlaylists = function (url) {
 		return new PlaylistPager(playlists, false);
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
-		log("Failed to get channel playlists: " + error.message);
+		trace("Failed to get channel playlists: " + error.message);
 		return new PlaylistPager([], false);
 	}
 };
@@ -707,7 +713,7 @@ source.getSubComments = function (comment) {
 		contextUrl: comment.contextUrl,
 		author: new PlatformAuthorLink(
 			new PlatformID(config.name, r.id, config.id, PLATFORM_CLAIMTYPE),
-			r.authorName, 
+			r.authorName,
 			r.authorUrl, 
 			r.authorImage
 		),
@@ -724,7 +730,7 @@ class PatreonCommentPager extends CommentPager {
 
 	constructor(url, resp) {
 		if (IS_TESTING)
-			log("CommentPager resp:", resp);
+			trace("CommentPager resp: " + JSON.stringify(resp));
 
 		const nextUrl = resp?.links?.next;
 		super([], !!nextUrl);
@@ -839,8 +845,8 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 			parseResponse: true
 		});
 
-	if (IS_TESTING)
-		console.log("getPosts data:", data);
+		if (IS_TESTING)
+			trace("getPosts data: " + JSON.stringify(data));
 
 		// Map all posts to Platform content using the reusable mapping functions
 		const contents = data?.data
@@ -854,7 +860,7 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 		};
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
-		log("Failed to get posts: " + error.message);
+		trace("Failed to get posts: " + error.message);
 		return {
 			results: [],
 			nextPage: null,
@@ -1045,7 +1051,7 @@ function searchPosts(query, cursor) {
 		};
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
-		log("Failed to search posts: " + error.message);
+		trace("Failed to search posts: " + error.message);
 		return { results: [], cursor: null, hasMore: false };
 	}
 }
@@ -1139,7 +1145,7 @@ function getHomeContent(url) {
 		};
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
-		console.log("Failed to get home content: " + error.message);
+		trace("Failed to get home content: " + error.message);
 		return { results: [], hasMore: false, nextPageUrl: null };
 	}
 }
@@ -1565,7 +1571,7 @@ function mapToImageContent(post, context, includedLookup) {
 			new Thumbnail(iu.thumbnail, 360),
 			new Thumbnail(iu.default_large, 1080),
 			new Thumbnail(iu.original, 9999)
-	].filter(t => t.url));
+		].filter(t => t.url));
 	};
 
 	if (ARTICLES_ENABLED) {
@@ -1741,17 +1747,29 @@ function httpGET(options) {
 
     const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
 
-    const resp = http.GET(
-        url,
-        localHeaders,
-        useAuthenticated
-    );
+    // Advanced setting: when disabled, make a single attempt (no retries).
+    const maxRetries = isSettingEnabled(_settings?.useRequestRetries ?? true) ? HTTP_MAX_RETRIES : 0;
 
-    if (!resp.isOk) {
+    let resp;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        resp = http.GET(
+            url,
+            localHeaders,
+            useAuthenticated
+        );
+
+        if (resp.isOk) break;
+
+        // Surface Cloudflare challenges immediately; retry only transient 429/5xx.
         throwIfCaptcha(resp);
-        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-        error.code = resp.code;
-        throw error;
+        const retriable = resp.code === HTTP_STATUS_TOO_MANY_REQUESTS || resp.code >= HTTP_STATUS_SERVER_ERROR_MIN;
+        if (!retriable || attempt === maxRetries) {
+            const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+            error.code = resp.code;
+            throw error;
+        }
+
+        bridge.sleep(HTTP_RETRY_BASE_DELAY_MS * (attempt + 1));
     }
 
     if (parseResponse) {
@@ -1786,6 +1804,14 @@ function getVanityFromUrl(url) {
 // Boolean settings arrive as real booleans from the app; coerce defensively (string "true" in tests).
 function isSettingEnabled(v) {
 	return v === true || v === "true";
+}
+
+// When enabled, surface trace/error messages as on-screen toasts for debugging; always logs.
+function trace(msg, { showToast = false } = {}) {
+	if (showToast || isSettingEnabled(_settings?.verboseNotifications)) {
+		bridge.toast(msg);
+	}
+	log(msg);
 }
 
 // Resolves the configured playlist sort param from the "playlistSortOrderIndex" Dropdown setting.
@@ -1869,7 +1895,7 @@ function addUrlHint(url, hintParam, hintValue = '1') {
         return urlObj.toString();
     } catch (error) {
         // If URL parsing fails, return the original false
-        log(`Error adding URL hint to ${url}:`, error);
+        trace(`Error adding URL hint to ${url}: ${error}`);
         return url;
     }
 }
@@ -1887,7 +1913,7 @@ function hasQueryParam(url, queryParamToCheck) {
 		return searchParams.has(queryParamToCheck);
 	} catch (error) {
 		// If URL parsing fails, return the original URL
-		log(`Error checking URL hint to ${url}:`, error);
+		trace(`Error checking URL hint to ${url}: ${error}`);
 		return false;
 	}
 }
