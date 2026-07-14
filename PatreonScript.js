@@ -647,8 +647,8 @@ source.getContentDetails = function (url) {
             // campaign is needed for the author; images resolves image_file posts (image_order -> media)
             // so they open on desktop. A bare fetch omits images; specifying include overrides defaults.
             url: BASE_URL_API + "/posts/" + postId + "?" + buildQuery({
-                "include": "campaign,images",
-                "fields[media]": "id,image_urls,display,download_url,metadata,file_name,state"
+                "include": "campaign,images,attachments_media",
+                "fields[media]": "id,image_urls,display,download_url,metadata,file_name,mimetype,size_bytes,state"
             }),
             useAuthenticated: true,
             parseResponse: true
@@ -838,7 +838,7 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 				"filter[media_types]": collectionId ? "video,audio" : undefined,
 				// Channel content search (server-side, scoped to the campaign).
 				"filter[search_query]": searchQuery,
-				"include": "images,media",
+				"include": "images,media,attachments_media",
 				"filter[contains_exclusive_posts]": "true",
 				"sort": collectionId ? getPlaylistSort() : "-published_at",
 				"fields[post]": "title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail",
@@ -952,9 +952,10 @@ function parseSinglePost(item, data, context, isDetails=false) {
 
     if (isDetails && !IS_DESKTOP) {
         // Android deep links don't support embeds, text-only, or image-file posts (no PlatformPostDetails / PlatformNestedMediaContent UI).
-        if (item?.attributes?.embed || 
-            item?.attributes?.post_type == 'text_only' ||
-            item?.attributes?.post_type == 'image_file') {
+        // Exception: text/image posts with a file attachment render as PlatformPostDetails so the download link is reachable.
+        const hasAttachment = (item?.relationships?.attachments_media?.data?.length ?? 0) > 0;
+        if (item?.attributes?.embed ||
+            ((item?.attributes?.post_type == 'text_only' || item?.attributes?.post_type == 'image_file') && !hasAttachment)) {
             throw new UnavailableException("Unsupported content type while deep linking. Consider opening it from inside the channel.");
         }
     }
@@ -1006,7 +1007,7 @@ function searchPosts(query, cursor) {
 				"fields[campaign]": "name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
 				"fields[post]": "comment_count,content,content_json_string,content_teaser_text,created_at,current_user_can_view,embed,image,like_count,post_file,post_metadata,published_at,post_type,teaser_text,thumbnail,thumbnail_url,title,url,video,video_preview",
 				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
-				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media",
+				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media,card_post.post.attachments_media",
 				"page[size]": SEARCH_PAGE_SIZE,
 				"page[cursor]": cursor || "",
 				"json-api-version": "1.0",
@@ -1080,7 +1081,7 @@ function toUnixSeconds(dateString) {
 function getHomeContent(url) {
 	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
 	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
-		"include": "campaign.null,latest_posts,latest_posts.images.null,latest_posts.audio.null",
+		"include": "campaign.null,latest_posts,latest_posts.images.null,latest_posts.audio.null,latest_posts.attachments_media.null",
 		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
 		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
 		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
@@ -1324,7 +1325,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 			}
 
 		case "text_only":
-			return mapToTextContent(post, context);
+			return mapToTextContent(post, context, includedLookup);
 
 		case "image_file":
 			return mapToImageContent(post, context, includedLookup);
@@ -1456,8 +1457,28 @@ function mapToAudioContent(post, context) {
 	});
 }
 
+// Builds an HTML block of download links for a post's file attachments (attachments_media),
+// resolved from the included lookup (Map from createIncludedLookupMap or raw {included} body).
+// Returns '' when the post has no downloadable attachments.
+function buildAttachmentsHtml(post, includedLookup) {
+	const refs = post?.relationships?.attachments_media?.data || [];
+	const links = [];
+	for (const ref of refs) {
+		const media = includedLookup instanceof Map
+			? includedLookup.get(`media:${ref.id}`)
+			: includedLookup?.included?.find(m => m.id === ref.id && m.type === "media");
+		const attrs = media?.attributes;
+		if (!attrs?.download_url) continue;
+		const name = (attrs.file_name || "Attachment").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		const mb = attrs.size_bytes ? attrs.size_bytes / 1048576 : 0;
+		const size = mb >= 1 ? mb.toFixed(1) + " MB" : (attrs.size_bytes ? Math.round(attrs.size_bytes / 1024) + " KB" : "");
+		links.push('<p><a href="' + attrs.download_url + '" target="_blank">' + name + '</a>' + (size ? " (" + size + ")" : "") + '</p>');
+	}
+	return links.length ? '<p>Attachments:</p>' + links.join("") : '';
+}
+
 // Maps post to PlatformPostDetails (Desktop) or PlatformArticleDetails (Android) for text content
-function mapToTextContent(post, context) {
+function mapToTextContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	const htmlContent = getPostHtmlContent(attrs);
 	if (!attrs?.title && !htmlContent) return null;
@@ -1471,6 +1492,10 @@ function mapToTextContent(post, context) {
 	}
 
 	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+	const attachmentsHtml = buildAttachmentsHtml(post, includedLookup);
+	// Attachment posts render as PlatformPostDetails (not article): Android's ArticleTextBlock installs
+	// no link handler, so the download <a> is inert there. PostDetailFragment makes it tappable.
+	const hasAttachment = (post?.relationships?.attachments_media?.data?.length ?? 0) > 0;
 
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
@@ -1481,7 +1506,7 @@ function mapToTextContent(post, context) {
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
-	if (ARTICLES_ENABLED) {
+	if (ARTICLES_ENABLED && !hasAttachment) {
 		let segments = [];
 		if (attrs?.content_json_string) {
 			try {
@@ -1511,7 +1536,7 @@ function mapToTextContent(post, context) {
 		...base,
 		description,
 		textType: Type.Text.HTML,
-		content: htmlContent || attrs?.teaser_text || "",
+		content: (htmlContent || attrs?.teaser_text || "") + attachmentsHtml,
 		images: [],
 		thumbnails: []
 	});
@@ -1548,6 +1573,10 @@ function mapToImageContent(post, context, includedLookup) {
 	const imageUrls = images.map(img => img.attributes.image_urls.original);
 
 	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+	const attachmentsHtml = buildAttachmentsHtml(post, includedLookup);
+	// Attachment posts render as PlatformPostDetails (not article) so the download link is tappable on
+	// Android (ArticleTextBlock installs no link handler).
+	const hasAttachment = (post?.relationships?.attachments_media?.data?.length ?? 0) > 0;
 
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
@@ -1569,7 +1598,7 @@ function mapToImageContent(post, context, includedLookup) {
 		].filter(t => t.url));
 	};
 
-	if (ARTICLES_ENABLED) {
+	if (ARTICLES_ENABLED && !hasAttachment) {
 		const segments = [new ArticleImagesSegment(imageUrls, "")];
 		if (attrs?.content_json_string) {
 			try {
@@ -1595,7 +1624,7 @@ function mapToImageContent(post, context, includedLookup) {
 		...base,
 		description,
 		textType: Type.Text.HTML,
-		content: htmlContent || "",
+		content: (htmlContent || "") + attachmentsHtml,
 		images: imageUrls,
 		thumbnails: images.map(imageToThumbnails)
 	});
