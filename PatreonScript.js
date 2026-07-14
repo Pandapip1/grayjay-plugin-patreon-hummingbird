@@ -16,13 +16,38 @@ const URL_SEARCH_POSTS = BASE_URL_API + "/search_feed/v1/post";
 const URL_USER = BASE_URL_API + "/current_user";
 const URL_LAUNCHER_CARDS = BASE_URL_API + "/launcher/cards";
 
+// Retry policy for transient HTTP failures (429 rate-limit, 5xx server errors).
+const HTTP_MAX_RETRIES = 3;
+const HTTP_RETRY_BASE_DELAY_MS = 1000;
+const HTTP_STATUS_TOO_MANY_REQUESTS = 429;
+const HTTP_STATUS_SERVER_ERROR_MIN = 500;
+const HTTP_STATUS_FORBIDDEN = 403;
+
+// Page sizes per endpoint.
+const COMMENTS_PAGE_SIZE = 10;
+const HOME_PAGE_SIZE = 10;
+// launcher/cards returns ~1 card per page and ignores page[count]; merge several
+// links.next pages into one Grayjay page for a fuller Home feed.
+const HOME_PAGES_PER_FETCH = 3;
+const SEARCH_PAGE_SIZE = 20;
+const RECOMMENDATIONS_COUNT = 5;
+const COLLECTION_COUNT_PROBE_SIZE = 1;
+
+// Max characters of a post description before truncation.
+const MAX_DESCRIPTION_LENGTH = 500;
+
+// Campaign fields needed to build a PlatformChannel (campaignToPlatformChannel) INCLUDING vanity, which
+// default campaign fields omit. Required so campaignChannelUrl can emit a canonical patreon.com URL for
+// creators whose campaign url is a custom domain (unknown fields are ignored by the API, not errored).
+const CAMPAIGN_CHANNEL_FIELDS = "name,summary,url,vanity,patron_count,image_url,cover_photo_url,cwh_cover_image_urls,avatar_photo_url,avatar_photo_image_urls";
+
 const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?})\);/s
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
 const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s
-const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon.com\/(.+)/s
-const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon.com\/profile(?:\/creators)?\?u=(\d+)/s
+const REGEX_CHANNEL_URL = /https:\/\/(?:www\.)?patreon\.com\/(.+)/s
+const REGEX_PROFILE_URL = /https:\/\/(?:www\.)?patreon\.com\/profile(?:\/creators)?\?u=(\d+)/s
 
-const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon.com\/posts\/.*-(.*)\/?/s
+const REGEX_URL_ID = /https:\/\/(?:www\.)?patreon\.com\/(?:[^\/]+\/)?posts\/.*-(.*)\/?/s
 
 // Grayjay content type for media (video/audio). Playlist contents must be PlatformVideo only
 // (the app deserializes playlist.contents via JSVideoPager and requires Duration), so collection
@@ -54,7 +79,7 @@ const AUDIO_CONTAINER_BY_EXTENSION = {
 const DEFAULT_AUDIO_CONTAINER = "audio/mpeg";
 
 // Common request modifier for all Patreon requests
-let PATREON_REQUEST_MODIFIER = {
+const PATREON_REQUEST_MODIFIER = {
 	headers: {
 		"Referer": "https://www.patreon.com/",
 		"Origin": "https://www.patreon.com"
@@ -86,13 +111,15 @@ source.enable = function (conf, settings, savedState) {
 				}
 			}
 		} catch (e) {
-			log("Patreon: failed to parse savedState, starting fresh: " + e);
+			trace("Patreon: failed to parse savedState, starting fresh: " + e);
 		}
 	}
 }
+
 source.saveState = function () {
 	return JSON.stringify(state);
 }
+
 source.getHome = function () {
 
 	if (!bridge.isLoggedIn()) {
@@ -164,18 +191,18 @@ class SearchContentPager extends ContentPager {
 //Home Pager
 class HomePager extends ContentPager {
 	constructor() {
-		const initialData = getHomeContent();
+		const initialData = getMergedHomeContent();
 		super(initialData.results, initialData.hasMore);
 		this.nextPageUrl = initialData.nextPageUrl;
 	}
-	
+
 	nextPage() {
 		if (!this.nextPageUrl) {
 			this.hasMore = false;
 			return this;
 		}
-		
-		const newData = getHomeContent(this.nextPageUrl);
+
+		const newData = getMergedHomeContent(this.nextPageUrl);
 		this.results = newData.results;
 		this.hasMore = newData.hasMore;
 		this.nextPageUrl = newData.nextPageUrl;
@@ -206,7 +233,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 		for (const pattern of campaignIdPatterns) {
 			let match;
 			while ((match = pattern.exec(htmlContent)) !== null) {
-				// Look for IDs that are likely campaign IDs (8+ digits)
+				// Look for IDs that are likely campaign IDs (5+ digits)
 				if (match[1] && match[1].length >= 5) {
 					campaignId = match[1];
 					break;
@@ -218,7 +245,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 	
 	if (campaignId) {
 		// Try to get campaign data via campaigns API
-		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY;
+		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY + "&" + buildQuery({ "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS });
 		
 		try {
 			const apiData = httpGET({
@@ -236,6 +263,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 								name: apiData.data.attributes.name,
 								description: apiData.data.attributes.description || apiData.data.attributes.summary,
 								url: apiData.data.attributes.url,
+								vanity: apiData.data.attributes.vanity,
 								patron_count: apiData.data.attributes.patron_count,
 								avatar_photo_url: apiData.data.attributes.avatar_photo_url,
 								image_url: apiData.data.attributes.image_url || apiData.data.attributes.cover_photo_url
@@ -258,7 +286,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 // Function to get channel information from user ID (for profile/creators URLs)
 function getChannelFromUserId(userId, originalUrl) {
 	// First, try to get user information from the API
-	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign" });
+	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign", "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS });
 	const userData = httpGET({
 		url: userApiUrl,
 		useAuthenticated: true,
@@ -355,7 +383,10 @@ function getChannelFromVanity(vanity) {
 	});
 	const campaign = data?.data?.[0];
 	if (!campaign) return null;
-	const channel = { campaign: { data: { id: campaign.id, attributes: campaign.attributes } } };
+	// Inject the known vanity (default campaign fields omit it) so campaignChannelUrl can emit a canonical
+	// patreon.com URL for creators whose campaign url is a custom domain (e.g. members.frame-lines.com).
+	const attributes = { ...campaign.attributes, vanity: campaign.attributes.vanity ?? vanity };
+	const channel = { campaign: { data: { id: campaign.id, attributes } } };
 	return campaignToPlatformChannel(channel, extractSocialLinks(data.included));
 }
 
@@ -366,13 +397,9 @@ function getChannelFromHtml(url) {
 	let finalUrl;
 
 	try {
-		const response = httpGET({
-			url: url,
-			useAuthenticated: false,
-			parseResponse: false
-		});
-		channelResp = { body: response };
-		finalUrl = url; // httpGET doesn't expose redirect URL, using original
+		const resp = httpRequest({ url: url, useAuthenticated: false });
+		channelResp = { body: resp.body };
+		finalUrl = resp.url ?? url; // final URL after any redirect (canonical creator url)
 	} catch (error) {
 		if (error.code === 404)
 			throw new UnavailableException("Channel not found");
@@ -424,8 +451,7 @@ function getChannelFromHtml(url) {
 	return state.channelCache[url];
 };
 source.getChannelContents = function (url) {
-	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
-	state.channelCache[url] = channel;
+	const channel = source.getChannel(url);
 	return new ChannelContentPager(channel.id.value, channel);
 };
 class ChannelContentPager extends ContentPager {
@@ -451,14 +477,12 @@ class ChannelContentPager extends ContentPager {
 }
 
 source.searchChannelContents = function (url, query, type, order, filters) {
-	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
-	state.channelCache[url] = channel;
+	const channel = source.getChannel(url);
 	return new SearchChannelContentPager(channel.id.value, channel, query);
 };
 
 source.getChannelPlaylists = function (url) {
-	const channel = (state.channelCache[url]) ? state.channelCache[url] : source.getChannel(url);
-	state.channelCache[url] = channel;
+	const channel = source.getChannel(url);
 
 	const campaignId = channel?.id?.value;
 	const vanity = getVanityFromChannel(channel);
@@ -498,7 +522,7 @@ source.getChannelPlaylists = function (url) {
 		// meta.pagination.total). Lets us set an accurate videoCount and drop collections that
 		// contain no playable media (e.g. polls/links), which would otherwise be empty playlists.
 		const batch = http.batch();
-		collections.forEach(c => batch.GET(collectionMediaPostsUrl(campaignId, c.id, 1), PATREON_REQUEST_MODIFIER.headers, true));
+		collections.forEach(c => batch.GET(collectionMediaPostsUrl(campaignId, c.id, COLLECTION_COUNT_PROBE_SIZE), PATREON_REQUEST_MODIFIER.headers, true));
 		const resps = batch.execute();
 
 		const playlists = [];
@@ -515,7 +539,8 @@ source.getChannelPlaylists = function (url) {
 
 		return new PlaylistPager(playlists, false);
 	} catch (error) {
-		log("Failed to get channel playlists: " + error.message);
+		if (error instanceof CaptchaRequiredException) throw error;
+		trace("Failed to get channel playlists: " + error.message);
 		return new PlaylistPager([], false);
 	}
 };
@@ -533,8 +558,7 @@ source.getPlaylist = function (url) {
 	const collectionId = match[2];
 
 	const channelUrl = BASE_URL + "/" + vanity;
-	const channel = (state.channelCache[channelUrl]) ? state.channelCache[channelUrl] : source.getChannel(channelUrl);
-	state.channelCache[channelUrl] = channel;
+	const channel = source.getChannel(channelUrl);
 	const campaignId = channel?.id?.value;
 
 	const data = httpGET({
@@ -611,6 +635,18 @@ source.getChannelTemplateByClaimMap = () => {
 
 //Video
 source.isContentDetailsUrl = function (url) {
+
+	if (!url) return false;
+
+	// Android can't open post/text/image details, so only the media hint is valid there;
+	// desktop routes all detail types through isContentDetailsUrl/getContentDetails.
+	if (
+		hasQueryParam(url, 'isPatreonMediaContent') ||
+		(IS_DESKTOP && hasQueryParam(url, 'isPatreonPostContent'))
+	) {
+		return true;
+	}
+
 	if (REGEX_COLLECTIONS_PATH.test(url)) return false; // collection URLs are playlists, not content
 	return REGEX_URL_ID.test(url);
 };
@@ -620,7 +656,14 @@ source.getContentDetails = function (url) {
 
     try {
         const postBody = httpGET({
-            url: `https://www.patreon.com/api/posts/${postId}`,
+            // campaign is needed for the author; images resolves image_file posts (image_order -> media)
+            // so they open on desktop. A bare fetch omits images; specifying include overrides defaults.
+            url: BASE_URL_API + "/posts/" + postId + "?" + buildQuery({
+                "include": "campaign,images,attachments_media",
+                // vanity lets campaignChannelUrl emit a canonical patreon.com author URL for custom-domain creators.
+                "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS,
+                "fields[media]": "id,image_urls,display,download_url,metadata,file_name,mimetype,size_bytes,state"
+            }),
             useAuthenticated: true,
             parseResponse: true
         });
@@ -633,6 +676,7 @@ source.getContentDetails = function (url) {
         const channel = campaignToPlatformChannel({ campaign: { data : campaign }});
         return parseSinglePost(postBody.data, postBody, channel, true);
     } catch (error) {
+        if (error instanceof CaptchaRequiredException) throw error;
         if (error instanceof UnavailableException) throw error;
         throw new ScriptException("Failed to get post details");
     }
@@ -640,11 +684,11 @@ source.getContentDetails = function (url) {
 
 //Comments
 source.getComments = function (url, page = 0) {
-	const idMatch = REGEX_URL_ID.exec(url) ?? [];
-	if (idMatch.length != 2)
+
+	const id = getPostIdFromUrl(url);
+	if (!id)
 		return new CommentPager([], false);
-	const id = idMatch[1];
-	
+
 	try {
 		const commentsData = httpGET({
 			url: BASE_URL_API + "/posts/" + id + "/comments?" + buildQuery({
@@ -653,7 +697,7 @@ source.getComments = function (url, page = 0) {
 				"fields[post]": "comment_count",
 				"fields[user]": "image_url,full_name,url",
 				"fields[flair]": "image_tiny_url,name",
-				"page[count]": 10,
+				"page[count]": COMMENTS_PAGE_SIZE,
 				"sort": "-created",
 				"json-api-use-default-includes": "false",
 				"json-api-version": "1.0"
@@ -663,9 +707,11 @@ source.getComments = function (url, page = 0) {
 		});
 		return new PatreonCommentPager(url, commentsData);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to get comments");
 	}
 }
+
 source.getSubComments = function (comment) {
 	if (typeof comment === 'string')
 		comment = JSON.parse(comment);
@@ -683,8 +729,8 @@ source.getSubComments = function (comment) {
 	const replies = replyData.map(r => new Comment({
 		contextUrl: comment.contextUrl,
 		author: new PlatformAuthorLink(
-			new PlatformID(config.name, r.id, PLATFORM_CLAIMTYPE), 
-			r.authorName, 
+			new PlatformID(config.name, r.id, config.id, PLATFORM_CLAIMTYPE),
+			r.authorName,
 			r.authorUrl, 
 			r.authorImage
 		),
@@ -701,7 +747,7 @@ class PatreonCommentPager extends CommentPager {
 
 	constructor(url, resp) {
 		if (IS_TESTING)
-			log("CommentPager resp:", resp);
+			trace("CommentPager resp: " + JSON.stringify(resp));
 
 		const nextUrl = resp?.links?.next;
 		super([], !!nextUrl);
@@ -725,6 +771,7 @@ class PatreonCommentPager extends CommentPager {
 			
 			return this;
 		} catch (error) {
+			if (error instanceof CaptchaRequiredException) throw error;
 			throw new ScriptException("Failed to get next comment page");
 		}
 	}
@@ -754,7 +801,7 @@ class PatreonCommentPager extends CommentPager {
 					authorImage: rCommenter.attributes.image_url,
 					message: y.attributes.body ?? "",
 					voteSum: y.attributes.vote_sum ?? 0,
-					date: parseInt(Date.parse(y.attributes.created) / 1000),
+					date: toUnixSeconds(y.attributes.created),
 					replyCount: y.attributes.reply_count ?? 0
 				};
 			})
@@ -762,10 +809,10 @@ class PatreonCommentPager extends CommentPager {
 
 		return new Comment({
 			contextUrl: this.contextUrl,
-			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
+			author: new PlatformAuthorLink(new PlatformID(config.name, comment.id, config.id, PLATFORM_CLAIMTYPE), commenter.attributes.full_name, commenter.attributes.url, commenter.attributes.image_url),
 			message: comment.attributes.body ?? "",
 			rating: new RatingLikes(comment.attributes.vote_sum ?? 0),
-			date: parseInt(Date.parse(comment.attributes.created) / 1000),
+			date: toUnixSeconds(comment.attributes.created),
 			replyCount: comment.attributes.reply_count ?? 0,
 			// Must be a string: the app deserializes context into a string->string map
 			// (Android Map<String,String> / Desktop Dictionary<string,string>); a non-string value throws at deserialization.
@@ -777,17 +824,18 @@ class PatreonCommentPager extends CommentPager {
 source.getUserSubscriptions = function () {
 	try {
 		const response = httpGET({
-			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign" }),
+			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign", "fields[campaign]": "name,url,vanity" }),
 			useAuthenticated: true,
 			parseResponse: true
 		});
 
 		return response.data.relationships.active_memberships.data.map((membership) => {
 			const channel_id = response.included.find((extra) => extra.id === membership.id).relationships.campaign.data.id
-			const channel_url = response.included.find((extra) => extra.id === channel_id).attributes.url
-			return channel_url
+			const campaignAttrs = response.included.find((extra) => extra.id === channel_id).attributes
+			return campaignChannelUrl(campaignAttrs)
 		});
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to get subscriptions");
 	}
 }
@@ -804,7 +852,7 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 				"filter[media_types]": collectionId ? "video,audio" : undefined,
 				// Channel content search (server-side, scoped to the campaign).
 				"filter[search_query]": searchQuery,
-				"include": "images,media",
+				"include": "images,media,attachments_media",
 				"filter[contains_exclusive_posts]": "true",
 				"sort": collectionId ? getPlaylistSort() : "-published_at",
 				"fields[post]": "title,content,content_json_string,teaser_text,post_type,post_file,embed,image,post_metadata,published_at,url,like_count,current_user_can_view,thumbnail",
@@ -814,8 +862,8 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 			parseResponse: true
 		});
 
-	if (IS_TESTING)
-		console.log("getPosts data:", data);
+		if (IS_TESTING)
+			trace("getPosts data: " + JSON.stringify(data));
 
 		// Map all posts to Platform content using the reusable mapping functions
 		const contents = data?.data
@@ -828,7 +876,8 @@ function getPosts(campaign, context, nextPage, collectionId, searchQuery) {
 			total: data?.meta?.pagination?.total
 		};
 	} catch (error) {
-		log("Failed to get posts: " + error.message);
+		if (error instanceof CaptchaRequiredException) throw error;
+		trace("Failed to get posts: " + error.message);
 		return {
 			results: [],
 			nextPage: null,
@@ -898,13 +947,20 @@ function fetchSocialLinks(campaignId) {
 	}
 }
 
+// Canonical patreon.com channel URL for a campaign. Some creators use a custom domain as their campaign
+// url (e.g. members.frame-lines.com); prefer the vanity-based patreon.com URL so the rest of the plugin
+// (isChannelUrl / getChannel / getChannelContents) can resolve it. Falls back to the raw url if no vanity.
+function campaignChannelUrl(attrs) {
+	return attrs?.vanity ? (BASE_URL + "/" + attrs.vanity) : attrs?.url;
+}
+
 function campaignToPlatformChannel(channel, links) {
 
 	return new PlatformChannel({
 		id: new PlatformID(config.name, channel?.campaign?.data?.id, config.id, PLATFORM_CLAIMTYPE),
 		name: channel?.campaign?.data?.attributes?.name,
 		description: channel?.campaign?.data?.attributes?.description ?? channel?.campaign?.data?.attributes?.summary,
-		url: channel?.campaign?.data?.attributes?.url,
+		url: campaignChannelUrl(channel?.campaign?.data?.attributes),
 		subscribers: channel?.campaign?.data?.attributes?.patron_count,
 		banner: channel?.campaign?.data?.attributes?.image_url ?? channel?.campaign?.data?.attributes?.cover_photo_url ?? channel?.campaign?.data?.attributes?.cwh_cover_image_urls?.large,
 		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail,
@@ -917,9 +973,10 @@ function parseSinglePost(item, data, context, isDetails=false) {
 
     if (isDetails && !IS_DESKTOP) {
         // Android deep links don't support embeds, text-only, or image-file posts (no PlatformPostDetails / PlatformNestedMediaContent UI).
-        if (item?.attributes?.embed || 
-            item?.attributes?.post_type == 'text_only' ||
-            item?.attributes?.post_type == 'image_file') {
+        // Exception: text/image posts with a file attachment render as PlatformPostDetails so the download link is reachable.
+        const hasAttachment = (item?.relationships?.attachments_media?.data?.length ?? 0) > 0;
+        if (item?.attributes?.embed ||
+            ((item?.attributes?.post_type == 'text_only' || item?.attributes?.post_type == 'image_file') && !hasAttachment)) {
             throw new UnavailableException("Unsupported content type while deep linking. Consider opening it from inside the channel.");
         }
     }
@@ -942,7 +999,7 @@ function searchChannels(query, page) {
 		});
 
 		const channels = [];
-		for (let item of data.data) {
+		for (const item of data.data) {
 			const id = item.id;
 			if (id.startsWith("campaign_"))
 				channels.push(new PlatformAuthorLink(new PlatformID(config.name, id.substring("campaign_".length), config.id, PLATFORM_CLAIMTYPE),
@@ -954,6 +1011,7 @@ function searchChannels(query, page) {
 
 		return channels.filter(x => x != null);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		throw new ScriptException("Failed to search creators");
 	}
 }
@@ -970,8 +1028,8 @@ function searchPosts(query, cursor) {
 				"fields[campaign]": "name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
 				"fields[post]": "comment_count,content,content_json_string,content_teaser_text,created_at,current_user_can_view,embed,image,like_count,post_file,post_metadata,published_at,post_type,teaser_text,thumbnail,thumbnail_url,title,url,video,video_preview",
 				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
-				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media",
-				"page[size]": 20,
+				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media,card_post.post.attachments_media",
+				"page[size]": SEARCH_PAGE_SIZE,
 				"page[cursor]": cursor || "",
 				"json-api-version": "1.0",
 				"json-api-use-default-includes": "false"
@@ -1017,7 +1075,8 @@ function searchPosts(query, cursor) {
 			hasMore: !!nextCursor
 		};
 	} catch (error) {
-		log("Failed to search posts: " + error.message);
+		if (error instanceof CaptchaRequiredException) throw error;
+		trace("Failed to search posts: " + error.message);
 		return { results: [], cursor: null, hasMore: false };
 	}
 }
@@ -1027,25 +1086,46 @@ function getPostIdFromUrl(url) {
     return match ? match[1] : null;
 }
 
+/**
+ * Converts an ISO date string to a Unix timestamp in whole seconds.
+ * @param {string} dateString - e.g. attrs.published_at; may be null/undefined/invalid.
+ * @returns {number} Unix time in seconds, or 0 when missing/unparseable.
+ */
+function toUnixSeconds(dateString) {
+	if (!dateString) return 0;
+	const ms = Date.parse(dateString);
+	return Number.isNaN(ms) ? 0 : Math.floor(ms / 1000);
+}
+
+
+// Merges up to HOME_PAGES_PER_FETCH launcher/cards pages (followed via links.next)
+// into one Grayjay page; page[count] is server-ignored, so each page is ~1 card.
+function getMergedHomeContent(url) {
+	const results = [];
+	let nextPageUrl = url;
+	let hasMore = false;
+	for (let i = 0; i < HOME_PAGES_PER_FETCH; i++) {
+		const page = getHomeContent(nextPageUrl);
+		results.push(...page.results);
+		hasMore = page.hasMore;
+		nextPageUrl = page.nextPageUrl;
+		if (!nextPageUrl) break; // reached the end of the feed
+	}
+	return { results, hasMore, nextPageUrl };
+}
 
 // Function to get home content from launcher/cards API
 function getHomeContent(url) {
 	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
 	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
-		"include": "campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null,latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null,latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity,latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity,latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null,latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post,latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null,latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice,latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows,latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null,latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null,latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media,upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null",
+		"include": "campaign.null,latest_posts,latest_posts.images.null,latest_posts.audio.null,latest_posts.attachments_media.null",
 		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
-		"fields[comment]": "body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state",
-		"fields[content-unlock-option]": "content_unlock_type,reward_benefit_categories",
-		"fields[display-identity]": "name,link_url",
 		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
-		"fields[product-variant]": "name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url",
-		"fields[drop]": "created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count",
 		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
-		"fields[livestream]": "state,display",
 		"filter[show_shop_posts]": "false",
 		"json-api-version": "1.0",
 		"json-api-use-default-includes": "false",
-		"page[count]": 10
+		"page[count]": HOME_PAGE_SIZE
 	}));
 	
 	try {
@@ -1100,7 +1180,7 @@ function getHomeContent(url) {
 		};
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
-		console.log("Failed to get home content: " + error.message);
+		trace("Failed to get home content: " + error.message);
 		return { results: [], hasMore: false, nextPageUrl: null };
 	}
 }
@@ -1255,7 +1335,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 		case "video_external_file":
 		case "video_embed":
 			{
-				const contentDetails = mapToVideoContent(post, context);
+				const contentDetails = mapToVideoContent(post, context, includedLookup);
 
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
@@ -1270,7 +1350,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 		case "audio_file":
 			{
 				const isVideo = attrs.post_file && (attrs.post_file.width > 0 || attrs.post_file.url?.includes('.m3u8'));
-				const contentDetails = isVideo ? mapToVideoContent(post, context) : mapToAudioContent(post, context);
+				const contentDetails = isVideo ? mapToVideoContent(post, context, includedLookup) : mapToAudioContent(post, context, includedLookup);
 
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
@@ -1282,7 +1362,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 			}
 
 		case "text_only":
-			return mapToTextContent(post, context);
+			return mapToTextContent(post, context, includedLookup);
 
 		case "image_file":
 			return mapToImageContent(post, context, includedLookup);
@@ -1336,7 +1416,7 @@ source.getContentRecommendations = function (url) {
 			"fields[primary-image]": "image_icon",
 			"fields[identity-badge]": "badge_type",
 			"page[cursor]": "null",
-			"page[count]": 5,
+			"page[count]": RECOMMENDATIONS_COUNT,
 			"filter[is_by_creator]": "true",
 			"filter[contains_exclusive_posts]": "true",
 			"json-api-use-default-includes": "false",
@@ -1355,23 +1435,26 @@ source.getContentRecommendations = function (url) {
 
 		return new ContentPager(content, false);
 	} catch (error) {
+		if (error instanceof CaptchaRequiredException) throw error;
 		return new ContentPager([], false);
 	}
 };
 
 // Maps post to PlatformVideoDetails for video content
-function mapToVideoContent(post, context) {
+function mapToVideoContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
+
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonMediaContent');
 
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		datetime: toUnixSeconds(attrs.published_at),
+		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
-		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
+		description: (getPostHtmlContent(attrs) || attrs.teaser_text || "") + buildAttachmentsHtml(post, includedLookup),
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url, 1)
@@ -1381,18 +1464,20 @@ function mapToVideoContent(post, context) {
 }
 
 // Maps post to PlatformVideoDetails for audio content
-function mapToAudioContent(post, context) {
+function mapToAudioContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
+
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonMediaContent');
 
 	return new PlatformVideoDetails({
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		datetime: toUnixSeconds(attrs.published_at),
+		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
-		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
+		description: (getPostHtmlContent(attrs) || attrs.teaser_text || "") + buildAttachmentsHtml(post, includedLookup),
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.post_file?.default_thumbnail?.url, 1)
@@ -1409,31 +1494,56 @@ function mapToAudioContent(post, context) {
 	});
 }
 
+// Builds an HTML block of download links for a post's file attachments (attachments_media),
+// resolved from the included lookup (Map from createIncludedLookupMap or raw {included} body).
+// Returns '' when the post has no downloadable attachments.
+function buildAttachmentsHtml(post, includedLookup) {
+	const refs = post?.relationships?.attachments_media?.data || [];
+	const links = [];
+	for (const ref of refs) {
+		const media = includedLookup instanceof Map
+			? includedLookup.get(`media:${ref.id}`)
+			: includedLookup?.included?.find(m => m.id === ref.id && m.type === "media");
+		const attrs = media?.attributes;
+		if (!attrs?.download_url) continue;
+		const name = (attrs.file_name || "Attachment").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		const mb = attrs.size_bytes ? attrs.size_bytes / 1048576 : 0;
+		const size = mb >= 1 ? mb.toFixed(1) + " MB" : (attrs.size_bytes ? Math.round(attrs.size_bytes / 1024) + " KB" : "");
+		links.push('<p><a href="' + attrs.download_url + '" target="_blank">' + name + '</a>' + (size ? " (" + size + ")" : "") + '</p>');
+	}
+	return links.length ? '<p>Attachments:</p>' + links.join("") : '';
+}
+
 // Maps post to PlatformPostDetails (Desktop) or PlatformArticleDetails (Android) for text content
-function mapToTextContent(post, context) {
+function mapToTextContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	const htmlContent = getPostHtmlContent(attrs);
 	if (!attrs?.title && !htmlContent) return null;
 
-	const maxDescriptionLength = 500;
 	let description = attrs?.teaser_text || "";
 	if (htmlContent) {
 		const text = domParser.parseFromString(htmlContent).text;
-		description = text.length > maxDescriptionLength
-			? text.substring(0, maxDescriptionLength) + "..."
+		description = text.length > MAX_DESCRIPTION_LENGTH
+			? text.substring(0, MAX_DESCRIPTION_LENGTH) + "..."
 			: text;
 	}
+
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+	const attachmentsHtml = buildAttachmentsHtml(post, includedLookup);
+	// Attachment posts render as PlatformPostDetails (not article): Android's ArticleTextBlock installs
+	// no link handler, so the download <a> is inert there. PostDetailFragment makes it tappable.
+	const hasAttachment = (post?.relationships?.attachments_media?.data?.length ?? 0) > 0;
 
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Text Post",
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		datetime: toUnixSeconds(attrs.published_at),
+		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
-	if (ARTICLES_ENABLED) {
+	if (ARTICLES_ENABLED && !hasAttachment) {
 		let segments = [];
 		if (attrs?.content_json_string) {
 			try {
@@ -1463,7 +1573,7 @@ function mapToTextContent(post, context) {
 		...base,
 		description,
 		textType: Type.Text.HTML,
-		content: htmlContent || attrs?.teaser_text || "",
+		content: (htmlContent || attrs?.teaser_text || "") + attachmentsHtml,
 		images: [],
 		thumbnails: []
 	});
@@ -1489,27 +1599,43 @@ function mapToImageContent(post, context, includedLookup) {
 	if (images.length === 0) return null;
 
 	const htmlContent = getPostHtmlContent(attrs);
-	const maxDescriptionLength = 500;
 	let description = attrs?.teaser_text || "";
 	if (htmlContent) {
 		const text = domParser.parseFromString(htmlContent).text;
-		description = text.length > maxDescriptionLength
-			? text.substring(0, maxDescriptionLength) + "..."
+		description = text.length > MAX_DESCRIPTION_LENGTH
+			? text.substring(0, MAX_DESCRIPTION_LENGTH) + "..."
 			: text;
 	}
 
 	const imageUrls = images.map(img => img.attributes.image_urls.original);
 
+	const contentUrl = addUrlHint(attrs.url || (BASE_URL + "/posts/" + post.id), 'isPatreonPostContent');
+	const attachmentsHtml = buildAttachmentsHtml(post, includedLookup);
+	// Attachment posts render as PlatformPostDetails (not article) so the download link is tappable on
+	// Android (ArticleTextBlock installs no link handler).
+	const hasAttachment = (post?.relationships?.attachments_media?.data?.length ?? 0) > 0;
+
 	const base = {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title || "Image Post",
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
-		url: attrs.url || (BASE_URL + "/posts/" + post.id),
+		datetime: toUnixSeconds(attrs.published_at),
+		url: contentUrl,
 		rating: new RatingLikes(attrs.like_count || 0)
 	};
 
-	if (ARTICLES_ENABLED) {
+	// Post thumbnails is a list (one Thumbnails per image); article is a single representative
+	// image. Each Thumbnails is an ascending-size ladder (px width; original = max).
+	const imageToThumbnails = (img) => {
+		const iu = img?.attributes?.image_urls ?? {};
+		return new Thumbnails([
+			new Thumbnail(iu.thumbnail, 360),
+			new Thumbnail(iu.default_large, 1080),
+			new Thumbnail(iu.original, 9999)
+		].filter(t => t.url));
+	};
+
+	if (ARTICLES_ENABLED && !hasAttachment) {
 		const segments = [new ArticleImagesSegment(imageUrls, "")];
 		if (attrs?.content_json_string) {
 			try {
@@ -1522,9 +1648,7 @@ function mapToImageContent(post, context, includedLookup) {
 		const article = new PlatformArticleDetails({
 			...base,
 			summary: description,
-			thumbnails: new Thumbnails([
-				new Thumbnail(images[0].attributes.image_urls.thumbnail || imageUrls[0], 1)
-			].filter(t => t.url)),
+			thumbnails: imageToThumbnails(images[0]),
 			segments
 		});
 		article.getContentRecommendations = function () {
@@ -1537,11 +1661,9 @@ function mapToImageContent(post, context, includedLookup) {
 		...base,
 		description,
 		textType: Type.Text.HTML,
-		content: htmlContent || "",
+		content: (htmlContent || "") + attachmentsHtml,
 		images: imageUrls,
-		thumbnails: images.map(img => img.attributes.image_urls.thumbnail
-			? new Thumbnails([new Thumbnail(img.attributes.image_urls.thumbnail, 1)])
-			: null)
+		thumbnails: images.map(imageToThumbnails)
 	});
 }
 
@@ -1554,7 +1676,7 @@ function mapToNestedMediaContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		contentUrl: attrs.embed.url,
 		contentName: attrs.embed.subject,
@@ -1575,11 +1697,11 @@ function mapToLockedContent(post, context) {
 		id: new PlatformID(config.name, post.id, config.id),
 		name: attrs.title,
 		author: createAuthor(post, context),
-		datetime: attrs.published_at ? (Date.parse(attrs.published_at) / 1000) : 0,
+		datetime: toUnixSeconds(attrs.published_at),
 		url: attrs.url || (BASE_URL + "/posts/" + post.id),
 		contentName: attrs.embed?.subject,
 		contentThumbnails: new Thumbnails([
-			new Thumbnail(attrs.thumbnail?.large || attrs.image?.thumb_url, 1)
+			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.image?.url || attrs.meta_image_url, 1)
 		].filter(x => x.url)),
 		lockDescription: "Exclusive for members",
 		unlockUrl: attrs.url || (BASE_URL + "/posts/" + post.id),
@@ -1632,7 +1754,7 @@ function createIncludedLookupMap(includedData) {
 }
 
 function throwIfCaptcha(resp) {
-    if (resp != null && resp.body != null && resp.code == 403) {
+    if (resp != null && resp.body != null && resp.code == HTTP_STATUS_FORBIDDEN) {
 
         const body = resp.body.toLowerCase();
 
@@ -1676,38 +1798,46 @@ function buildQuery(params) {
  * @returns {string | Object} the response body as a string or the parsed json object
  * @throws {ScriptException}
  */
+// Performs the GET with retry + captcha detection + error handling; returns the raw response.
+// resp.url is the final URL after redirects (also resp.body / resp.code / resp.headers / resp.isOk).
+function httpRequest({ url, useAuthenticated = false, headers = null }) {
+	const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
+
+	// Advanced setting: when disabled, make a single attempt (no retries).
+	const maxRetries = isSettingEnabled(_settings?.useRequestRetries ?? true) ? HTTP_MAX_RETRIES : 0;
+
+	let resp;
+	for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		resp = http.GET(url, localHeaders, useAuthenticated);
+
+		if (resp.isOk) break;
+
+		// Surface Cloudflare challenges immediately; retry only transient 429/5xx.
+		throwIfCaptcha(resp);
+		const retriable = resp.code === HTTP_STATUS_TOO_MANY_REQUESTS || resp.code >= HTTP_STATUS_SERVER_ERROR_MIN;
+		if (!retriable || attempt === maxRetries) {
+			const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
+			error.code = resp.code;
+			throw error;
+		}
+
+		bridge.sleep(HTTP_RETRY_BASE_DELAY_MS * (attempt + 1));
+	}
+
+	return resp;
+}
+
+// Convenience wrapper over httpRequest: parses the JSON body; parseResponse:false returns the raw body.
 function httpGET(options) {
-    const {
-        url,
-        useAuthenticated = false,
-        parseResponse = true,
-        headers = null
-    } = options;
-
-    const localHeaders = headers ?? PATREON_REQUEST_MODIFIER.headers;
-
-    const resp = http.GET(
-        url,
-        localHeaders,
-        useAuthenticated
-    );
-
-    if (!resp.isOk) {
-        throwIfCaptcha(resp);
-        const error = new ScriptException("Request [" + url + "] failed with code [" + resp.code + "]");
-        error.code = resp.code;
-        throw error;
-    }
-
-    if (parseResponse) {
-        const json = JSON.parse(resp.body);
-        if (json.errors && json.errors.length > 0) {
-            throw new ScriptException(json.errors[0].message || "API returned errors");
-        }
-        return json;
-    }
-
-    return resp.body;
+	const resp = httpRequest(options);
+	if (options.parseResponse === false) {
+		return resp.body;
+	}
+	const json = JSON.parse(resp.body);
+	if (json.errors && json.errors.length > 0) {
+		throw new ScriptException(json.errors[0].message || "API returned errors");
+	}
+	return json;
 }
 
 
@@ -1733,6 +1863,14 @@ function isSettingEnabled(v) {
 	return v === true || v === "true";
 }
 
+// When enabled, surface trace/error messages as on-screen toasts for debugging; always logs.
+function trace(msg, { showToast = false } = {}) {
+	if (showToast || isSettingEnabled(_settings?.verboseNotifications)) {
+		bridge.toast(msg);
+	}
+	log(msg);
+}
+
 // Resolves the configured playlist sort param from the "playlistSortOrderIndex" Dropdown setting.
 function getPlaylistSort() {
 	return PLAYLIST_SORTS[parseInt(_settings?.playlistSortOrderIndex ?? 0)] || PLAYLIST_SORTS[0];
@@ -1750,7 +1888,7 @@ function collectionToPlatformPlaylist(col, vanity, author, videoCount) {
 		url: BASE_URL + "/cw/" + vanity + "/collections?collection_id=" + col.id,
 		thumbnail: a.thumbnail?.thumbnail_large || a.thumbnail?.original || a.thumbnail?.thumbnail || null,
 		videoCount: (typeof videoCount === "number") ? videoCount : -1,
-		datetime: a.created_at ? Math.floor(Date.parse(a.created_at) / 1000) : 0
+		datetime: toUnixSeconds(a.created_at)
 	});
 }
 
@@ -1790,4 +1928,50 @@ class SearchChannelContentPager extends ContentPager {
 }
 
 
-log("LOADED");
+/**
+ * Adds a URL hint parameter to a URL if it doesn't already have one
+ * @param {string} url - The URL to add the hint to
+ * @param {string} hintParam - The hint parameter name (without the value)
+ * @param {string} hintValue - The value for the hint parameter
+ * @returns {string} - The URL with the hint parameter added
+ */
+
+function addUrlHint(url, hintParam, hintValue = '1') {
+	if (!url) {
+		return url;
+	}
+
+	// Check if hint already exists
+	if (url.includes(`${hintParam}=${hintValue}`)) {
+		return url;
+	}
+
+	try {
+		const urlObj = new URL(url);
+		urlObj.searchParams.append(hintParam, hintValue);
+		return urlObj.toString();
+	} catch (error) {
+		// If URL parsing fails, return the original url unchanged.
+		trace(`Error adding URL hint to ${url}: ${error}`);
+		return url;
+	}
+}
+
+/**
+ * Checks whether a URL carries a given query parameter.
+ * @param {string} url - The URL to inspect
+ * @param {string} queryParamToCheck - The query parameter name to look for
+ * @returns {boolean} true if present; false if absent or the URL is unparseable
+ */
+function hasQueryParam(url, queryParamToCheck) {
+	try {
+		return new URL(url).searchParams.has(queryParamToCheck);
+	} catch (error) {
+		// If URL parsing fails, treat the parameter as absent.
+		trace(`Error checking URL hint in ${url}: ${error}`);
+		return false;
+	}
+}
+
+
+log("loaded");

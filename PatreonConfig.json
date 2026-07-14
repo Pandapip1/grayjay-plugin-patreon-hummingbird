@@ -7,8 +7,8 @@
 	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
 	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
 	"scriptUrl": "./PatreonScript.js",
-	"version": 29,
-	
+	"version": 30,
+
 	"iconUrl": "./patreon_logo.png",
 	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
 	
@@ -22,6 +22,17 @@
 		"patreon.com"
 	],
 	"changelog": {
+		"30": [
+			"Fix: Opening posts (video, audio, image, embed, members-only) on desktop;",
+			"Fix: Comments failing to load;",
+			"Fix: Recommendations failing to load;",
+			"Fix: Image post thumbnails;",
+			"Fix: Content failing to load during rate limits or captchas;",
+			"Fix: Recognizing channels opened via alternate or redirected URLs;",
+			"Feature: Add support for creators using custom domains;",
+			"Improvement: Show downloadable file attachments on posts;",
+			"Improvement: Load more content on Home;"
+		],
 		"29": [
 			"Fix: Home failing in some circumstances under VPNs;",
 			"Fix: Channel and channel content failing to load under VPNs;",
@@ -109,6 +120,28 @@
 				"Newest first",
 				"Oldest first"
 			]
+		},
+		{
+			"variable": "advanced",
+			"name": "Advanced",
+			"description": "Settings not intended for most users, but may help with troubleshooting.",
+			"type": "Header"
+		},
+		{
+			"variable": "useRequestRetries",
+			"name": "Request Retries",
+			"description": "Retry failed HTTP requests (rate-limit and server errors) up to 3 times before failing.",
+			"type": "Boolean",
+			"default": "true",
+			"isAdvanced": "true"
+		},
+		{
+			"variable": "verboseNotifications",
+			"name": "Verbose notifications",
+			"description": "Show toast notifications for plugin trace messages and failed requests (useful for debugging).",
+			"type": "Boolean",
+			"default": "false",
+			"isAdvanced": "true"
 		}
 	],
 	
