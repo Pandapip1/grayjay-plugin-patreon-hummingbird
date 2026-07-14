@@ -26,6 +26,9 @@ const HTTP_STATUS_FORBIDDEN = 403;
 // Page sizes per endpoint.
 const COMMENTS_PAGE_SIZE = 10;
 const HOME_PAGE_SIZE = 10;
+// launcher/cards returns ~1 card per page and ignores page[count]; merge several
+// links.next pages into one Grayjay page for a fuller Home feed.
+const HOME_PAGES_PER_FETCH = 3;
 const SEARCH_PAGE_SIZE = 20;
 const RECOMMENDATIONS_COUNT = 5;
 const COLLECTION_COUNT_PROBE_SIZE = 1;
@@ -188,18 +191,18 @@ class SearchContentPager extends ContentPager {
 //Home Pager
 class HomePager extends ContentPager {
 	constructor() {
-		const initialData = getHomeContent();
+		const initialData = getMergedHomeContent();
 		super(initialData.results, initialData.hasMore);
 		this.nextPageUrl = initialData.nextPageUrl;
 	}
-	
+
 	nextPage() {
 		if (!this.nextPageUrl) {
 			this.hasMore = false;
 			return this;
 		}
-		
-		const newData = getHomeContent(this.nextPageUrl);
+
+		const newData = getMergedHomeContent(this.nextPageUrl);
 		this.results = newData.results;
 		this.hasMore = newData.hasMore;
 		this.nextPageUrl = newData.nextPageUrl;
@@ -1094,6 +1097,22 @@ function toUnixSeconds(dateString) {
 	return Number.isNaN(ms) ? 0 : Math.floor(ms / 1000);
 }
 
+
+// Merges up to HOME_PAGES_PER_FETCH launcher/cards pages (followed via links.next)
+// into one Grayjay page; page[count] is server-ignored, so each page is ~1 card.
+function getMergedHomeContent(url) {
+	const results = [];
+	let nextPageUrl = url;
+	let hasMore = false;
+	for (let i = 0; i < HOME_PAGES_PER_FETCH; i++) {
+		const page = getHomeContent(nextPageUrl);
+		results.push(...page.results);
+		hasMore = page.hasMore;
+		nextPageUrl = page.nextPageUrl;
+		if (!nextPageUrl) break; // reached the end of the feed
+	}
+	return { results, hasMore, nextPageUrl };
+}
 
 // Function to get home content from launcher/cards API
 function getHomeContent(url) {

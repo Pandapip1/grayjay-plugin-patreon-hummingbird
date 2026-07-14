@@ -31,7 +31,7 @@
 			"Fix: Recognizing channels opened via alternate or redirected URLs;",
 			"Fix: Subscriptions, channels, and content for creators using a custom domain;",
 			"Improvement: Show downloadable file attachments on posts;",
-			"Performance: Faster Home loading;"
+			"Improvement: Load more content on Home;"
 		],
 		"29": [
 			"Fix: Home failing in some circumstances under VPNs;",
