@@ -29,7 +29,7 @@
 			"Fix: Image post thumbnails;",
 			"Fix: Content failing to load during rate limits or captchas;",
 			"Fix: Recognizing channels opened via alternate or redirected URLs;",
-			"Fix: Subscriptions, channels, and content for creators using a custom domain;",
+			"Feature: Add support for creators using custom domains;",
 			"Improvement: Show downloadable file attachments on posts;",
 			"Improvement: Load more content on Home;"
 		],
