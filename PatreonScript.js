@@ -33,6 +33,11 @@ const COLLECTION_COUNT_PROBE_SIZE = 1;
 // Max characters of a post description before truncation.
 const MAX_DESCRIPTION_LENGTH = 500;
 
+// Campaign fields needed to build a PlatformChannel (campaignToPlatformChannel) INCLUDING vanity, which
+// default campaign fields omit. Required so campaignChannelUrl can emit a canonical patreon.com URL for
+// creators whose campaign url is a custom domain (unknown fields are ignored by the API, not errored).
+const CAMPAIGN_CHANNEL_FIELDS = "name,summary,url,vanity,patron_count,image_url,cover_photo_url,cwh_cover_image_urls,avatar_photo_url,avatar_photo_image_urls";
+
 const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?})\);/s
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
 const REGEX_CHANNEL_DETAILS3 = /id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s
@@ -237,7 +242,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 	
 	if (campaignId) {
 		// Try to get campaign data via campaigns API
-		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY;
+		const apiUrl = BASE_URL_API + "/campaigns/" + campaignId + "?" + SOCIAL_LINKS_QUERY + "&" + buildQuery({ "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS });
 		
 		try {
 			const apiData = httpGET({
@@ -255,6 +260,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 								name: apiData.data.attributes.name,
 								description: apiData.data.attributes.description || apiData.data.attributes.summary,
 								url: apiData.data.attributes.url,
+								vanity: apiData.data.attributes.vanity,
 								patron_count: apiData.data.attributes.patron_count,
 								avatar_photo_url: apiData.data.attributes.avatar_photo_url,
 								image_url: apiData.data.attributes.image_url || apiData.data.attributes.cover_photo_url
@@ -277,7 +283,7 @@ function getChannelFromVanityUrl(url, htmlContent) {
 // Function to get channel information from user ID (for profile/creators URLs)
 function getChannelFromUserId(userId, originalUrl) {
 	// First, try to get user information from the API
-	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign" });
+	const userApiUrl = BASE_URL_API + "/user/" + userId + "?" + buildQuery({ "include": "campaign", "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS });
 	const userData = httpGET({
 		url: userApiUrl,
 		useAuthenticated: true,
@@ -651,6 +657,8 @@ source.getContentDetails = function (url) {
             // so they open on desktop. A bare fetch omits images; specifying include overrides defaults.
             url: BASE_URL_API + "/posts/" + postId + "?" + buildQuery({
                 "include": "campaign,images,attachments_media",
+                // vanity lets campaignChannelUrl emit a canonical patreon.com author URL for custom-domain creators.
+                "fields[campaign]": CAMPAIGN_CHANNEL_FIELDS,
                 "fields[media]": "id,image_urls,display,download_url,metadata,file_name,mimetype,size_bytes,state"
             }),
             useAuthenticated: true,
