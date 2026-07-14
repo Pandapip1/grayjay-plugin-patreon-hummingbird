@@ -1080,16 +1080,10 @@ function toUnixSeconds(dateString) {
 function getHomeContent(url) {
 	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
 	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
-		"include": "campaign.creator.null,campaign.null,campaign.rewards.null,campaign.current_user_pledge.null,latest_posts,latest_posts.audio.null,latest_posts.recent_comments.parent,latest_posts.recent_comments.on_behalf_of_campaign.null,latest_posts.recent_comments.commenter.campaign.null,latest_posts.recent_comments.commenter_identity,latest_posts.recent_comments.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter_identity,latest_posts.recent_comments.first_reply.commenter_identity.primary_avatar,latest_posts.recent_comments.first_reply.commenter.campaign.null,latest_posts.recent_comments.first_reply.parent,latest_posts.recent_comments.first_reply.post,latest_posts.recent_comments.first_reply.on_behalf_of_campaign.null,latest_posts.images.null,latest_posts.poll.null,latest_posts.poll.choices,latest_posts.poll.current_user_responses.user.null,latest_posts.poll.current_user_responses.choice,latest_posts.access_rules,latest_posts.access_rules.tier,latest_posts.drop,latest_posts.livestream,latest_posts.shows,latest_posts.content_unlock_options,latest_posts.content_unlock_options.product_variant.null,latest_posts.content_unlock_options.product_variant.collection.null,latest_posts.content_unlock_options.reward.null,latest_highlights,latest_product_variant,latest_product_variant.content_media,latest_product_variant.preview_media,upcoming_drops.null,upcoming_drops.post.null,upcoming_drops.post.drop.null,upcoming_drops.post.livestream,upcoming_drops.post.audio.null",
+		"include": "campaign.null,latest_posts,latest_posts.images.null,latest_posts.audio.null",
 		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
-		"fields[comment]": "body,created,deleted_at,is_by_patron,is_by_creator,is_liked_by_creator,vote_sum,current_user_vote,reply_count,visibility_state",
-		"fields[content-unlock-option]": "content_unlock_type,reward_benefit_categories",
-		"fields[display-identity]": "name,link_url",
 		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
-		"fields[product-variant]": "name,id,price_cents,published_at_datetime,url,access_metadata,content_type,checkout_url",
-		"fields[drop]": "created_at,expires_at,scheduled_for,cover_image,cover_image.url,is_droppable,comments_cid,presence_cid,presence_count",
 		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
-		"fields[livestream]": "state,display",
 		"filter[show_shop_posts]": "false",
 		"json-api-version": "1.0",
 		"json-api-use-default-includes": "false",
