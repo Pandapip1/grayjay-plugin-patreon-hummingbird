@@ -1298,7 +1298,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 		case "video_external_file":
 		case "video_embed":
 			{
-				const contentDetails = mapToVideoContent(post, context);
+				const contentDetails = mapToVideoContent(post, context, includedLookup);
 
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
@@ -1313,7 +1313,7 @@ function mapPostToPlatformContent(post, context, includedLookup) {
 		case "audio_file":
 			{
 				const isVideo = attrs.post_file && (attrs.post_file.width > 0 || attrs.post_file.url?.includes('.m3u8'));
-				const contentDetails = isVideo ? mapToVideoContent(post, context) : mapToAudioContent(post, context);
+				const contentDetails = isVideo ? mapToVideoContent(post, context, includedLookup) : mapToAudioContent(post, context, includedLookup);
 
 				if (contentDetails) {
 					contentDetails.getContentRecommendations = function () {
@@ -1404,7 +1404,7 @@ source.getContentRecommendations = function (url) {
 };
 
 // Maps post to PlatformVideoDetails for video content
-function mapToVideoContent(post, context) {
+function mapToVideoContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
@@ -1417,7 +1417,7 @@ function mapToVideoContent(post, context) {
 		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
-		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
+		description: (getPostHtmlContent(attrs) || attrs.teaser_text || "") + buildAttachmentsHtml(post, includedLookup),
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url, 1)
@@ -1427,7 +1427,7 @@ function mapToVideoContent(post, context) {
 }
 
 // Maps post to PlatformVideoDetails for audio content
-function mapToAudioContent(post, context) {
+function mapToAudioContent(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs?.post_file?.url) return null;
 
@@ -1440,7 +1440,7 @@ function mapToAudioContent(post, context) {
 		datetime: toUnixSeconds(attrs.published_at),
 		url: contentUrl,
 		duration: attrs.post_file.duration || 0,
-		description: getPostHtmlContent(attrs) || attrs.teaser_text || "",
+		description: (getPostHtmlContent(attrs) || attrs.teaser_text || "") + buildAttachmentsHtml(post, includedLookup),
 		rating: new RatingLikes(attrs.like_count || 0),
 		thumbnails: new Thumbnails([
 			new Thumbnail(attrs.thumbnail?.url || attrs.image?.thumb_url || attrs.post_file?.default_thumbnail?.url, 1)
