@@ -374,7 +374,10 @@ function getChannelFromVanity(vanity) {
 	});
 	const campaign = data?.data?.[0];
 	if (!campaign) return null;
-	const channel = { campaign: { data: { id: campaign.id, attributes: campaign.attributes } } };
+	// Inject the known vanity (default campaign fields omit it) so campaignChannelUrl can emit a canonical
+	// patreon.com URL for creators whose campaign url is a custom domain (e.g. members.frame-lines.com).
+	const attributes = { ...campaign.attributes, vanity: campaign.attributes.vanity ?? vanity };
+	const channel = { campaign: { data: { id: campaign.id, attributes } } };
 	return campaignToPlatformChannel(channel, extractSocialLinks(data.included));
 }
 
@@ -810,15 +813,15 @@ class PatreonCommentPager extends CommentPager {
 source.getUserSubscriptions = function () {
 	try {
 		const response = httpGET({
-			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign" }),
+			url: URL_USER + "?" + buildQuery({ "include": "active_memberships.campaign", "fields[campaign]": "name,url,vanity" }),
 			useAuthenticated: true,
 			parseResponse: true
 		});
 
 		return response.data.relationships.active_memberships.data.map((membership) => {
 			const channel_id = response.included.find((extra) => extra.id === membership.id).relationships.campaign.data.id
-			const channel_url = response.included.find((extra) => extra.id === channel_id).attributes.url
-			return channel_url
+			const campaignAttrs = response.included.find((extra) => extra.id === channel_id).attributes
+			return campaignChannelUrl(campaignAttrs)
 		});
 	} catch (error) {
 		if (error instanceof CaptchaRequiredException) throw error;
@@ -933,13 +936,20 @@ function fetchSocialLinks(campaignId) {
 	}
 }
 
+// Canonical patreon.com channel URL for a campaign. Some creators use a custom domain as their campaign
+// url (e.g. members.frame-lines.com); prefer the vanity-based patreon.com URL so the rest of the plugin
+// (isChannelUrl / getChannel / getChannelContents) can resolve it. Falls back to the raw url if no vanity.
+function campaignChannelUrl(attrs) {
+	return attrs?.vanity ? (BASE_URL + "/" + attrs.vanity) : attrs?.url;
+}
+
 function campaignToPlatformChannel(channel, links) {
 
 	return new PlatformChannel({
 		id: new PlatformID(config.name, channel?.campaign?.data?.id, config.id, PLATFORM_CLAIMTYPE),
 		name: channel?.campaign?.data?.attributes?.name,
 		description: channel?.campaign?.data?.attributes?.description ?? channel?.campaign?.data?.attributes?.summary,
-		url: channel?.campaign?.data?.attributes?.url,
+		url: campaignChannelUrl(channel?.campaign?.data?.attributes),
 		subscribers: channel?.campaign?.data?.attributes?.patron_count,
 		banner: channel?.campaign?.data?.attributes?.image_url ?? channel?.campaign?.data?.attributes?.cover_photo_url ?? channel?.campaign?.data?.attributes?.cwh_cover_image_urls?.large,
 		thumbnail: channel?.campaign?.data?.attributes?.avatar_photo_url ?? channel?.campaign?.data?.attributes?.avatar_photo_image_urls?.thumbnail,
