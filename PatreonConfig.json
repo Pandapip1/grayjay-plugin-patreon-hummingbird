@@ -1,16 +1,16 @@
 {
-	"name": "Patreon",
-	"description": "Patreon is a subscription platform allowing creators to release membership only content.",
+	"name": "Patreon (Hummingbird)",
+	"description": "Patreon is a subscription platform allowing creators to release membership only content. Hummingbird's fork of the FUTO plugin.",
 	"author": "FUTO",
 	"authorUrl": "https://futo.tech",
 	"platformUrl": "https://patreon.com",
-	"sourceUrl": "https://plugins.grayjay.app/Patreon/PatreonConfig.json",
-	"repositoryUrl": "https://gitlab.futo.org/videostreaming/plugins/patreon",
+	"sourceUrl": "https://hummingbird.eightybps.com/plugins/patreon/PatreonConfig.json",
+	"repositoryUrl": "https://hummingbird.eightybps.com/plugins/patreon/source",
 	"scriptUrl": "./PatreonScript.js",
 	"version": 30,
 
 	"iconUrl": "./patreon_logo.png",
-	"id": "aac9e9f0-24b5-11ee-be56-0242ac120002",
+	"id": "bf1ab295-96fa-445d-bb78-215116ee472e",
 	
 	"scriptSignature": "",
 	"scriptPublicKey": "",
