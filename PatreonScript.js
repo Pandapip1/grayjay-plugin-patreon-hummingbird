@@ -39,7 +39,7 @@ const MAX_DESCRIPTION_LENGTH = 500;
 // Campaign fields needed to build a PlatformChannel (campaignToPlatformChannel) INCLUDING vanity, which
 // default campaign fields omit. Required so campaignChannelUrl can emit a canonical patreon.com URL for
 // creators whose campaign url is a custom domain (unknown fields are ignored by the API, not errored).
-const CAMPAIGN_CHANNEL_FIELDS = "name,summary,url,vanity,patron_count,image_url,cover_photo_url,cwh_cover_image_urls,avatar_photo_url,avatar_photo_image_urls";
+const CAMPAIGN_CHANNEL_FIELDS = "is_nsfw,name,summary,url,vanity,patron_count,image_url,cover_photo_url,cwh_cover_image_urls,avatar_photo_url,avatar_photo_image_urls";
 
 const REGEX_CHANNEL_DETAILS = /Object\.assign\(window\.patreon\.bootstrap, ({.*?})\);/s
 const REGEX_CHANNEL_DETAILS2 = /window\.patreon = ({.*?});/s
@@ -955,6 +955,8 @@ function campaignChannelUrl(attrs) {
 }
 
 function campaignToPlatformChannel(channel, links) {
+	if (isNsfwCampaign(channel?.campaign?.data?.attributes) && !nsfwContentEnabled())
+		throw new UnavailableException("This creator is marked NSFW. Turn on \"Show NSFW creators and posts\" in the plugin settings to view it.");
 
 	return new PlatformChannel({
 		id: new PlatformID(config.name, channel?.campaign?.data?.id, config.id, PLATFORM_CLAIMTYPE),
@@ -1001,6 +1003,8 @@ function searchChannels(query, page) {
 		const channels = [];
 		for (const item of data.data) {
 			const id = item.id;
+			if (isNsfwCampaign(item.attributes) && !nsfwContentEnabled())
+				continue;
 			if (id.startsWith("campaign_"))
 				channels.push(new PlatformAuthorLink(new PlatformID(config.name, id.substring("campaign_".length), config.id, PLATFORM_CLAIMTYPE),
 					item.attributes.name,
@@ -1024,8 +1028,8 @@ function searchPosts(query, cursor) {
 				"filter[query]": query,
 				"filter[is_for_preview]": "false",
 				"filter[filter_by_user_subscription]": "false",
-				"filter[include_nsfw]": "true",
-				"fields[campaign]": "name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
+				"filter[include_nsfw]": nsfwSearchEnabled() ? "true" : "false",
+				"fields[campaign]": "is_nsfw,name,url,patron_count,avatar_photo_url,avatar_photo_image_urls",
 				"fields[post]": "comment_count,content,content_json_string,content_teaser_text,created_at,current_user_can_view,embed,image,like_count,post_file,post_metadata,published_at,post_type,teaser_text,thumbnail,thumbnail_url,title,url,video,video_preview",
 				"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
 				"include": "card_post,card_post.post,card_post.post.campaign,card_post.post.images,card_post.post.media,card_post.post.attachments_media",
@@ -1059,7 +1063,8 @@ function searchPosts(query, cursor) {
 				name: campaign?.attributes?.name,
 				url: campaign?.attributes?.url,
 				thumbnail: campaign?.attributes?.avatar_photo_image_urls?.thumbnail || campaign?.attributes?.avatar_photo_url,
-				subscribers: campaign?.attributes?.patron_count || 0
+				subscribers: campaign?.attributes?.patron_count || 0,
+				isNsfw: isNsfwCampaign(campaign?.attributes)
 			};
 
 			const content = mapPostToPlatformContent(post, campaignContext, includedMap);
@@ -1119,7 +1124,7 @@ function getHomeContent(url) {
 	// url, when present, is a verbatim links.next cursor URL — never rebuild it.
 	const requestUrl = url || (URL_LAUNCHER_CARDS + "?" + buildQuery({
 		"include": "campaign.null,latest_posts,latest_posts.images.null,latest_posts.audio.null,latest_posts.attachments_media.null",
-		"fields[campaign]": "id,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
+		"fields[campaign]": "id,is_nsfw,avatar_photo_image_urls,name,url,vanity,cover_photo_url_sizes,creation_count,currency,current_user_is_free_member,main_video_embed,main_video_url,offers_paid_membership,one_liner,pay_per_name,post_count,pledge_url,primary_theme_color,summary,is_monthly",
 		"fields[post]": "id,attachments_media,change_visibility_at,comment_count,content,content_json_string,content_teaser_text,current_user_can_comment,current_user_can_report,current_user_can_view,current_user_has_liked,created_at,current_user_comment_disallowed_reason,embed,is_new_to_current_user,image,images,is_paid,like_count,likes,patreon_url,pledge_url,post_file,post_type,post_metadata,preview_asset_type,published_at,teaser_text,thumbnail,title,upgrade_url,url,was_posted_by_campaign_owner,video_preview",
 		"fields[media]": "id,image_urls,display,download_url,metadata,file_name,state",
 		"filter[show_shop_posts]": "false",
@@ -1153,7 +1158,8 @@ function getHomeContent(url) {
 						name: campaign.attributes?.name,
 						url: campaign.attributes?.url,
 						thumbnail: campaign.attributes?.avatar_photo_image_urls?.thumbnail,
-						subscribers: campaign.attributes?.patron_count || 0
+						subscribers: campaign.attributes?.patron_count || 0,
+						isNsfw: isNsfwCampaign(campaign.attributes)
 					};
 					
 					// Get latest posts for this campaign
@@ -1316,7 +1322,19 @@ function proseMirrorToSegments(doc) {
 // ===== REUSABLE MAPPING FUNCTIONS =====
 
 // Maps a Patreon post to the appropriate Platform content class
+// Hummingbird fork: posts of creators Patreon marks NSFW are left out unless
+// "Show NSFW creators and posts" is on, and every item says whether its
+// creator is NSFW (isNsfw) so the app can gate on it.
 function mapPostToPlatformContent(post, context, includedLookup) {
+	if (context?.isNsfw === true && !nsfwContentEnabled())
+		return null;
+	const content = mapPostToPlatformContentUnfiltered(post, context, includedLookup);
+	if (content)
+		content.isNsfw = context?.isNsfw === true;
+	return content;
+}
+
+function mapPostToPlatformContentUnfiltered(post, context, includedLookup) {
 	const attrs = post?.attributes;
 	if (!attrs) return null;
 	
@@ -1396,7 +1414,8 @@ source.getContentRecommendations = function (url) {
 			name: campaign.attributes?.name,
 			url: campaign.attributes?.url,
 			thumbnail: campaign.attributes?.avatar_photo_image_urls?.thumbnail,
-			subscribers: campaign.attributes?.patron_count || 0
+			subscribers: campaign.attributes?.patron_count || 0,
+			isNsfw: isNsfwCampaign(campaign.attributes)
 		};
 
 		const requestUrl = BASE_URL_API + "/related_posts/" + campaign.id + "/" + postId + "?" + buildQuery({
@@ -1861,6 +1880,19 @@ function getVanityFromUrl(url) {
 // Boolean settings arrive as real booleans from the app; coerce defensively (string "true" in tests).
 function isSettingEnabled(v) {
 	return v === true || v === "true";
+}
+
+// Hummingbird fork: NSFW settings. Patreon marks creators (campaigns) NSFW.
+function nsfwSearchEnabled() {
+	return isSettingEnabled(_settings["includeNsfwResults"]);
+}
+
+function nsfwContentEnabled() {
+	return isSettingEnabled(_settings["showNsfwContent"]);
+}
+
+function isNsfwCampaign(attributes) {
+	return attributes?.is_nsfw === true;
 }
 
 // When enabled, surface trace/error messages as on-screen toasts for debugging; always logs.

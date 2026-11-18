@@ -97,6 +97,20 @@
 			"default": "false"
 		},
 		{
+			"variable": "includeNsfwResults",
+			"name": "Include NSFW results in search",
+			"description": "Ask Patreon for posts from creators marked NSFW when searching.",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
+			"variable": "showNsfwContent",
+			"name": "Show NSFW creators and posts",
+			"description": "Show creators Patreon marks NSFW, and their posts, everywhere (home, search, channels, recommendations).",
+			"type": "Boolean",
+			"default": "false"
+		},
+		{
 			"variable": "playlistsHeader",
 			"name": "Playlists",
 			"description": "Settings for creator collections shown as playlists.",
