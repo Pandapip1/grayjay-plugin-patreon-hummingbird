@@ -4,8 +4,8 @@
 	"author": "FUTO",
 	"authorUrl": "https://futo.tech",
 	"platformUrl": "https://patreon.com",
-	"sourceUrl": "https://hummingbird.eightybps.com/plugins/patreon/PatreonConfig.json",
-	"repositoryUrl": "https://hummingbird.eightybps.com/plugins/patreon/source",
+	"sourceUrl": "https://pandapip1.github.io/grayjay-plugin-patreon-hummingbird/PatreonConfig.json",
+	"repositoryUrl": "https://github.com/Pandapip1/grayjay-plugin-patreon-hummingbird",
 	"scriptUrl": "./PatreonScript.js",
 	"version": 30,
 

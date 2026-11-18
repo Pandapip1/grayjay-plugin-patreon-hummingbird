@@ -1,3 +1,5 @@
+// Modified by Hummingbird (2026-11-17) from FUTO's Patreon plugin (https://gitlab.futo.org/videostreaming/plugins/patreon).
+// Changes: see NOTICE.md. Licensed under the GNU AGPL v3, as the original.
 const PLATFORM_CLAIMTYPE = 12;
 const IS_DESKTOP = bridge.buildPlatform === "desktop";
 
